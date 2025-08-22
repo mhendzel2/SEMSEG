@@ -52,15 +52,11 @@ def remove_noise(image: np.ndarray,
         return denoised.astype(image.dtype)
     
     elif method == 'median':
-        disk_size = kwargs.get('disk_size', 3)
+        size = kwargs.get('size', 3)
         if image.ndim == 3:
-            # Apply median filter slice by slice for 3D data
-            result = np.zeros_like(image)
-            for i in range(image.shape[0]):
-                result[i] = filters.median(image[i], morphology.disk(disk_size))
-            return result
+            return ndimage.median_filter(image, size=size)
         else:
-            return filters.median(image, morphology.disk(disk_size))
+            return filters.median(image, morphology.disk(size))
     
     elif method == 'wiener':
         noise_variance = kwargs.get('noise_variance', None)
@@ -86,19 +82,27 @@ def enhance_contrast(image: np.ndarray,
     logger.info(f"Applying {method} contrast enhancement")
     
     if method == 'clahe':
-        clip_limit = kwargs.get('clip_limit', 0.03)
-        tile_grid_size = kwargs.get('tile_grid_size', (8, 8))
+        clip_limit = kwargs.get('clip_limit', 2.0)
+        kernel_size = kwargs.get('kernel_size', (8, 8, 8))
         
         if image.ndim == 3:
-            # Apply CLAHE slice by slice for 3D data
-            result = np.zeros_like(image)
-            for i in range(image.shape[0]):
-                result[i] = exposure.equalize_adapthist(
-                    image[i],
-                    clip_limit=clip_limit,
-                    nbins=256
-                )
-            return result
+            try:
+                import mclahe
+                # mclahe expects image to be in range [0, 1]
+                img_normalized = image.astype(np.float32)
+                img_normalized = (img_normalized - img_normalized.min()) / (img_normalized.max() - img_normalized.min())
+
+                return mclahe.mclahe(img_normalized, kernel_size=np.array(kernel_size), clip_limit=clip_limit)
+            except ImportError:
+                logger.warning("mclahe not found, falling back to slice-by-slice CLAHE")
+                result = np.zeros_like(image)
+                for i in range(image.shape[0]):
+                    result[i] = exposure.equalize_adapthist(
+                        image[i],
+                        clip_limit=clip_limit,
+                        nbins=256
+                    )
+                return result
         else:
             return exposure.equalize_adapthist(
                 image,

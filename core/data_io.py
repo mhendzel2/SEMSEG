@@ -52,13 +52,17 @@ class FIBSEMData:
             raise ValueError("Axis must be 0, 1, or 2")
 
 def load_fibsem_data(file_path: Union[str, Path], 
-                     voxel_size: Optional[Tuple[float, float, float]] = None) -> FIBSEMData:
+                     voxel_size: Optional[Tuple[float, float, float]] = None,
+                     raw_shape: Optional[Tuple[int, int, int]] = None,
+                     raw_dtype: Union[str, np.dtype] = np.uint8) -> FIBSEMData:
     """
     Load FIB-SEM data from various file formats.
     
     Args:
         file_path: Path to the data file
         voxel_size: Optional voxel size (z, y, x) in micrometers
+        raw_shape: Shape of the data for raw binary files
+        raw_dtype: Data type for raw binary files
         
     Returns:
         FIBSEMData object containing the loaded data
@@ -78,7 +82,7 @@ def load_fibsem_data(file_path: Union[str, Path],
     elif file_path.suffix.lower() == '.npy':
         data = _load_numpy(file_path)
     elif file_path.suffix.lower() == '.raw':
-        data = _load_raw_binary(file_path)
+        data = _load_raw_binary(file_path, shape=raw_shape, dtype=raw_dtype)
     else:
         # Try to load as numpy array first
         try:
@@ -153,32 +157,19 @@ def _load_numpy(file_path: Path) -> np.ndarray:
     """Load numpy array file."""
     return np.load(file_path)
 
-def _load_raw_binary(file_path: Path) -> np.ndarray:
-    """Load raw binary data (requires shape information)."""
-    # This is a simplified version - in practice, you'd need shape info
-    data = np.fromfile(file_path, dtype=np.uint8)
+def _load_raw_binary(file_path: Path,
+                       shape: Optional[Tuple[int, int, int]] = None,
+                       dtype: Union[str, np.dtype] = np.uint8) -> np.ndarray:
+    """Load raw binary data."""
+    if shape is None:
+        raise ValueError("Shape must be provided for raw binary files")
     
-    # Try to guess dimensions (this is very basic)
-    total_size = len(data)
+    data = np.fromfile(file_path, dtype=dtype)
     
-    # Common FIB-SEM dimensions
-    possible_shapes = [
-        (100, 512, 512),
-        (200, 512, 512),
-        (500, 1024, 1024),
-        (1000, 2048, 2048)
-    ]
-    
-    for shape in possible_shapes:
-        if np.prod(shape) == total_size:
-            return data.reshape(shape)
-    
-    # If no standard shape works, make it cubic-ish
-    cube_size = int(np.cbrt(total_size))
-    if cube_size ** 3 == total_size:
-        return data.reshape(cube_size, cube_size, cube_size)
-    
-    raise ValueError("Cannot determine shape for raw binary data")
+    if np.prod(shape) != data.size:
+        raise ValueError(f"Expected {np.prod(shape)} elements for shape {shape}, but found {data.size}")
+
+    return data.reshape(shape)
 
 def save_fibsem_data(data: Union[FIBSEMData, np.ndarray], 
                      file_path: Union[str, Path],

@@ -1,0 +1,8 @@
+numpy>=1.20.0
+scipy>=1.7.0
+scikit-image>=0.18.0
+h5py>=3.6.0
+tifffile>=2021.11.2
+PyYAML>=6.0
+Pillow>=9.0.0
+mclahe @ https://github.com/VincentStimper/mclahe/archive/numpy.zip

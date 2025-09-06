@@ -81,13 +81,13 @@ def demo_gui_functionality():
     # Morphological analysis
     morph_result = pipeline.quantify_morphology()
     if morph_result['success']:
-        morph_data = morph_result['morphological_analysis']
         print(f"✓ Morphological analysis:")
-        print(f"  Objects analyzed: {morph_data['num_objects']}")
-        if morph_data['volumes']:
-            volumes = morph_data['volumes']
-            print(f"  Volume range: {np.min(volumes):.1f} - {np.max(volumes):.1f} nm³")
-            print(f"  Mean volume: {np.mean(volumes):.1f} nm³")
+        print(f"  Objects analyzed: {morph_result['num_objects']}")
+        if morph_result['object_properties']:
+            volumes = [p['volume_nm3'] for p in morph_result['object_properties'] if 'volume_nm3' in p]
+            if volumes:
+                print(f"  Volume range: {np.min(volumes):.1f} - {np.max(volumes):.1f} nm³")
+                print(f"  Mean volume: {np.mean(volumes):.1f} nm³")
     
     # Particle analysis
     particle_result = pipeline.quantify_particles(min_size=50)
@@ -137,24 +137,27 @@ def demo_gui_functionality():
     print(f"✓ Visualization saved: {viz_file}")
     
     # Create analysis summary plot
-    if morph_result['success'] and morph_data['volumes']:
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-        
-        # Volume histogram
-        volumes = morph_data['volumes']
-        ax1.hist(volumes, bins=20, alpha=0.7, edgecolor='black')
-        ax1.set_xlabel('Volume (nm³)')
-        ax1.set_ylabel('Frequency')
-        ax1.set_title('Object Volume Distribution')
-        ax1.grid(True, alpha=0.3)
-        
-        # Volume vs area scatter
-        areas = morph_data['areas']
-        ax2.scatter(areas, volumes, alpha=0.6)
-        ax2.set_xlabel('Area (pixels)')
-        ax2.set_ylabel('Volume (nm³)')
-        ax2.set_title('Volume vs Area')
-        ax2.grid(True, alpha=0.3)
+    if morph_result['success'] and morph_result['object_properties']:
+        volumes = [p['volume_nm3'] for p in morph_result['object_properties'] if 'volume_nm3' in p]
+        areas = [p['num_voxels'] for p in morph_result['object_properties']]
+
+        if volumes:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+            # Volume histogram
+            ax1.hist(volumes, bins=20, alpha=0.7, edgecolor='black')
+            ax1.set_xlabel('Volume (nm³)')
+            ax1.set_ylabel('Frequency')
+            ax1.set_title('Object Volume Distribution')
+            ax1.grid(True, alpha=0.3)
+
+            # Volume vs area scatter
+            if len(areas) == len(volumes):
+                ax2.scatter(areas, volumes, alpha=0.6)
+                ax2.set_xlabel('Area (voxels)')
+                ax2.set_ylabel('Volume (nm³)')
+                ax2.set_title('Volume vs Area')
+                ax2.grid(True, alpha=0.3)
         
         plt.tight_layout()
         

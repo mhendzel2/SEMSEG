@@ -232,9 +232,40 @@ class FIBSEMPipeline:
     
     def _segment_deep_learning(self, data: np.ndarray, method: str, params: Dict[str, Any]) -> np.ndarray:
         """Apply deep learning segmentation method."""
-        # This is a simplified implementation - real version would load trained models
-        logger.warning(f"Deep learning method {method} not fully implemented, using watershed fallback")
-        return self._watershed_segmentation(data, {})
+        from core.unet import unet_model, predict_slices
+        from skimage import measure
+
+        logger.info(f"Applying deep learning method: {method}")
+
+        # In a real application, you would load a pre-trained model
+        # For this demo, we'll create a new model.
+        # The model architecture could be chosen based on the 'method' parameter.
+
+        input_size = (params.get("input_height", 256), params.get("input_width", 256), 1)
+        num_classes = params.get("num_classes", 2) # Assume binary: background + foreground
+
+        model = unet_model(input_size=input_size, num_classes=num_classes)
+
+        # Here you would typically load weights, e.g., model.load_weights('path/to/model.h5')
+        logger.warning("No pre-trained model weights loaded. Using randomly initialized U-Net.")
+
+        # Predict slice by slice
+        predictions = predict_slices(model, data)
+
+        # Convert probabilities to labels
+        # For multi-class, this would be argmax
+        if num_classes > 1:
+            labeled_image = np.argmax(predictions, axis=-1)
+        else:
+            # For binary, threshold the single output channel
+            threshold = params.get("threshold", 0.5)
+            labeled_image = (predictions > threshold).astype(np.uint8)
+
+        # Post-process to get instance labels if needed
+        # This uses connected components on the semantic segmentation
+        instance_labels = measure.label(labeled_image)
+
+        return instance_labels
     
     def _watershed_segmentation(self, data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
         """Perform watershed segmentation."""
@@ -364,12 +395,15 @@ class FIBSEMPipeline:
         
         return labels
     
-    def quantify_morphology(self, **kwargs) -> Dict[str, Any]:
+    def quantify_morphology(self, min_size: int = 10, **kwargs) -> Dict[str, Any]:
         """
         Quantify morphological properties of segmented objects.
         
+        Args:
+            min_size: Minimum object size (in pixels/voxels) to analyze.
+
         Returns:
-            Dictionary with morphological analysis results
+            Dictionary with morphological analysis results.
         """
         if self.segmentation_result is None:
             return {'success': False, 'error': 'No segmentation available'}
@@ -377,53 +411,69 @@ class FIBSEMPipeline:
         start_time = time.time()
         
         try:
-            logger.info("Quantifying morphological properties")
+            logger.info(f"Quantifying morphological properties (min_size={min_size})")
             
-            # This is a simplified implementation
             from skimage import measure
             
             # Get region properties
             props = measure.regionprops(self.segmentation_result)
             
-            analyzed_labels = []
-            volumes = []
-            areas = []
+            object_properties = []
             
             for prop in props:
-                if prop.area > kwargs.get('min_size', 10):
-                    analyzed_labels.append(prop.label)
+                if prop.area >= min_size:
+                    prop_dict = {
+                        'label': prop.label,
+                        'num_voxels': prop.area,
+                        'centroid': prop.centroid,
+                        'bounding_box': prop.bbox,
+                        'equivalent_diameter': prop.equivalent_diameter,
+                    }
                     
-                    # Calculate volume (area * voxel volume for 2D, or actual volume for 3D)
+                    # 3D-specific properties
                     if self.segmentation_result.ndim == 3:
                         voxel_volume = np.prod(self.voxel_spacing)
-                        volume = prop.area * voxel_volume  # area is actually volume in 3D
-                    else:
-                        voxel_area = self.voxel_spacing[1] * self.voxel_spacing[2]
-                        volume = prop.area * voxel_area
-                    
-                    volumes.append(volume)
-                    areas.append(prop.area)
+                        prop_dict['volume_nm3'] = prop.area * voxel_volume
+
+                        # Surface area and sphericity (can be computationally expensive)
+                        try:
+                            # Extract the object mask
+                            obj_mask = self.segmentation_result == prop.label
+
+                            # Marching cubes to get surface mesh
+                            verts, faces, _, _ = measure.marching_cubes(obj_mask, spacing=self.voxel_spacing)
+                            surface_area = measure.mesh_surface_area(verts, faces)
+                            prop_dict['surface_area_nm2'] = surface_area
+
+                            # Sphericity calculation
+                            # Sphericity = (pi^(1/3) * (6 * Volume)^(2/3)) / SurfaceArea
+                            if surface_area > 0:
+                                volume = prop_dict['volume_nm3']
+                                sphericity = (np.pi**(1/3) * (6 * volume)**(2/3)) / surface_area
+                                prop_dict['sphericity'] = sphericity
+
+                        except (RuntimeError, ValueError) as e:
+                            logger.warning(f"Could not calculate surface area for label {prop.label}: {e}")
+
+                    object_properties.append(prop_dict)
             
             duration = time.time() - start_time
             
             result = {
                 'success': True,
-                'analyzed_labels': analyzed_labels,
-                'morphological_analysis': {
-                    'volumes': volumes,
-                    'areas': areas,
-                    'num_objects': len(analyzed_labels)
-                },
+                'num_objects': len(object_properties),
+                'object_properties': object_properties,
                 'duration': duration
             }
             
             self.processing_history.append({
                 'step': 'quantify_morphology',
                 'duration': duration,
-                'result': {'num_objects': len(analyzed_labels)}
+                'parameters': {'min_size': min_size},
+                'result': {'num_objects': len(object_properties)}
             })
             
-            logger.info(f"Morphological quantification completed: {len(analyzed_labels)} objects, duration {duration:.2f}s")
+            logger.info(f"Morphological quantification completed: {len(object_properties)} objects, duration {duration:.2f}s")
             return result
             
         except Exception as e:

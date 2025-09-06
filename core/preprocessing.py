@@ -31,7 +31,8 @@ def remove_noise(image: np.ndarray,
     
     if method == 'gaussian':
         sigma = kwargs.get('sigma', 1.0)
-        return filters.gaussian(image, sigma=sigma, preserve_range=True)
+        result = filters.gaussian(image, sigma=sigma, preserve_range=True)
+        return result.astype(image.dtype)
     
     elif method == 'bilateral':
         sigma_color = kwargs.get('sigma_color', 0.1)
@@ -91,38 +92,42 @@ def enhance_contrast(image: np.ndarray,
         
         if image.ndim == 3:
             # Apply CLAHE slice by slice for 3D data
-            result = np.zeros_like(image)
+            result = np.zeros_like(image, dtype=np.float64)
             for i in range(image.shape[0]):
                 result[i] = exposure.equalize_adapthist(
                     image[i],
                     clip_limit=clip_limit,
                     nbins=256
                 )
-            return result
+            # Convert back to original data type
+            return (result * 255).astype(image.dtype)
         else:
-            return exposure.equalize_adapthist(
+            result = exposure.equalize_adapthist(
                 image,
                 clip_limit=clip_limit,
                 nbins=256
             )
+            return (result * 255).astype(image.dtype)
     
     elif method == 'histogram_eq':
         if image.ndim == 3:
-            result = np.zeros_like(image)
+            result = np.zeros_like(image, dtype=np.float64)
             for i in range(image.shape[0]):
                 result[i] = exposure.equalize_hist(image[i])
-            return result
+            return (result * 255).astype(image.dtype)
         else:
-            return exposure.equalize_hist(image)
+            result = exposure.equalize_hist(image)
+            return (result * 255).astype(image.dtype)
     
     elif method == 'adaptive_eq':
         if image.ndim == 3:
-            result = np.zeros_like(image)
+            result = np.zeros_like(image, dtype=np.float64)
             for i in range(image.shape[0]):
                 result[i] = exposure.equalize_adapthist(image[i])
-            return result
+            return (result * 255).astype(image.dtype)
         else:
-            return exposure.equalize_adapthist(image)
+            result = exposure.equalize_adapthist(image)
+            return (result * 255).astype(image.dtype)
     
     else:
         raise ValueError(f"Unknown contrast enhancement method: {method}")
@@ -347,6 +352,9 @@ def preprocess_fibsem_data(image: np.ndarray,
     logger.info(f"Starting preprocessing pipeline with steps: {steps}")
     
     for step in steps:
+        logger.info(f"Applying step: {step}")
+        logger.info(f"Image before step: dtype={result.dtype}, min={result.min()}, max={result.max()}")
+
         step_params = parameters.get(step, {})
         
         if step == 'noise_reduction':

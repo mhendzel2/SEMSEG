@@ -10,6 +10,10 @@ import os
 from pathlib import Path
 from typing import Union, Tuple, Optional, Dict, Any
 import logging
+import requests
+import zarr
+import shutil
+import s3fs
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -51,40 +55,94 @@ class FIBSEMData:
         else:
             raise ValueError("Axis must be 0, 1, or 2")
 
+def download_openorganelle_data(dataset_name: str, cache_dir: Union[str, Path] = "cache") -> Path:
+    """
+    Download data from OpenOrganelle.org.
+    Args:
+        dataset_name: Name of the dataset (e.g., "jrc_hela-2")
+        cache_dir: Directory to cache downloaded data
+    Returns:
+        Path to the downloaded zarr dataset
+    """
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(exist_ok=True)
+    zarr_path = cache_dir / f"{dataset_name}.zarr"
+
+    if zarr_path.exists():
+        logger.info(f"Dataset '{dataset_name}' found in cache.")
+        return zarr_path
+
+    # URL from https://www.openorganelle.org/datasets
+    url = f"https://janelia-cosem-datasets.s3.amazonaws.com/{dataset_name}/{dataset_name}.zarr"
+
+    logger.info(f"Downloading dataset '{dataset_name}' from {url}")
+
+    # This is a simplified download. A real implementation would handle this better.
+    # For now, we assume the user has `s3fs` installed and zarr can handle the s3 URL.
+    try:
+        s3 = s3fs.S3FileSystem(anon=True)
+
+        # Recursively download the directory
+        s3.get(f"janelia-cosem-datasets/{dataset_name}/{dataset_name}.zarr", str(zarr_path), recursive=True)
+
+        logger.info(f"Successfully downloaded and cached '{dataset_name}' to {zarr_path}")
+
+    except ImportError:
+        logger.error("s3fs is required to download from OpenOrganelle. Please install with 'pip install s3fs'")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download dataset: {e}")
+        if zarr_path.exists():
+            shutil.rmtree(zarr_path)
+        raise
+
+    return zarr_path
+
+
 def load_fibsem_data(file_path: Union[str, Path], 
                      voxel_size: Optional[Tuple[float, float, float]] = None) -> FIBSEMData:
     """
-    Load FIB-SEM data from various file formats.
+    Load FIB-SEM data from various file formats or OpenOrganelle.
     
     Args:
-        file_path: Path to the data file
+        file_path: Path to the data file or OpenOrganelle ID (e.g., "oo:jrc_hela-2")
         voxel_size: Optional voxel size (z, y, x) in micrometers
         
     Returns:
         FIBSEMData object containing the loaded data
     """
-    file_path = Path(file_path)
-    
-    if not file_path.exists():
-        raise FileNotFoundError(f"File not found: {file_path}")
-    
-    logger.info(f"Loading FIB-SEM data from {file_path}")
-    
-    # Determine file format and load accordingly
-    if file_path.suffix.lower() in ['.tif', '.tiff']:
-        data = _load_tiff_stack(file_path)
-    elif file_path.suffix.lower() in ['.h5', '.hdf5']:
-        data = _load_hdf5(file_path)
-    elif file_path.suffix.lower() == '.npy':
-        data = _load_numpy(file_path)
-    elif file_path.suffix.lower() == '.raw':
-        data = _load_raw_binary(file_path)
-    else:
-        # Try to load as numpy array first
+    if isinstance(file_path, str) and file_path.startswith("oo:"):
+        dataset_name = file_path.split(":")[1]
         try:
-            data = np.load(file_path)
-        except:
-            raise ValueError(f"Unsupported file format: {file_path.suffix}")
+            local_path = download_openorganelle_data(dataset_name)
+            data = zarr.open(str(local_path), mode='r')
+            # Convert to numpy array in memory
+            data = np.array(data)
+        except Exception as e:
+            raise IOError(f"Failed to load OpenOrganelle dataset '{dataset_name}': {e}")
+    else:
+        file_path = Path(file_path)
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        logger.info(f"Loading FIB-SEM data from {file_path}")
+
+        # Determine file format and load accordingly
+        if file_path.suffix.lower() in ['.tif', '.tiff']:
+            data = _load_tiff_stack(file_path)
+        elif file_path.suffix.lower() in ['.h5', '.hdf5']:
+            data = _load_hdf5(file_path)
+        elif file_path.suffix.lower() == '.npy':
+            data = _load_numpy(file_path)
+        elif file_path.suffix.lower() == '.raw':
+            data = _load_raw_binary(file_path)
+        else:
+            # Try to load as numpy array first
+            try:
+                data = np.load(file_path)
+            except:
+                raise ValueError(f"Unsupported file format: {file_path.suffix}")
     
     # Ensure data is 3D
     if data.ndim == 2:

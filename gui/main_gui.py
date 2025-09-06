@@ -82,7 +82,23 @@ class FIBSEMGUIApp:
         file_path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
         
         # Browse button
-        ttk.Button(file_section, text="Browse...", command=self.browse_file).pack(pady=5)
+        browse_button = ttk.Button(file_section, text="Browse...", command=self.browse_file)
+        browse_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+        # Or label
+        ttk.Label(file_section, text="OR").pack(side=tk.LEFT, padx=5)
+
+        # OpenOrganelle section
+        oo_section = ttk.LabelFrame(data_frame, text="Load from OpenOrganelle.org", padding=10)
+        oo_section.pack(fill=tk.X, padx=10, pady=5)
+
+        oo_frame = ttk.Frame(oo_section)
+        oo_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Label(oo_frame, text="Dataset ID:").pack(side=tk.LEFT)
+        self.oo_id_var = tk.StringVar()
+        oo_id_entry = ttk.Entry(oo_frame, textvariable=self.oo_id_var)
+        oo_id_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
         
         # File information section
         info_section = ttk.LabelFrame(data_frame, text="File Information", padding=10)
@@ -285,6 +301,7 @@ class FIBSEMGUIApp:
         
         if filename:
             self.file_path_var.set(filename)
+            self.oo_id_var.set("")  # Clear OpenOrganelle ID
             self.show_file_info(filename)
     
     def show_file_info(self, file_path):
@@ -310,12 +327,20 @@ class FIBSEMGUIApp:
             messagebox.showerror("Error", f"Could not read file information: {str(e)}")
     
     def load_data(self):
-        """Load the selected data file."""
+        """Load data from file or OpenOrganelle."""
         file_path = self.file_path_var.get()
-        if not file_path:
-            messagebox.showerror("Error", "Please select a data file first.")
+        oo_id = self.oo_id_var.get()
+
+        if not file_path and not oo_id:
+            messagebox.showerror("Error", "Please select a data file or enter an OpenOrganelle dataset ID.")
             return
         
+        if oo_id:
+            load_path = f"oo:{oo_id}"
+            self.file_path_var.set("") # Clear file path
+        else:
+            load_path = file_path
+
         try:
             # Get voxel size
             voxel_z = float(self.voxel_z_var.get())
@@ -330,7 +355,7 @@ class FIBSEMGUIApp:
             def load_thread():
                 try:
                     self.pipeline = FIBSEMPipeline(config=self.config, voxel_spacing=voxel_size)
-                    result = self.pipeline.load_data(file_path)
+                    result = self.pipeline.load_data(load_path)
                     
                     if result['success']:
                         self.current_data = result['data']

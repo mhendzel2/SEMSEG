@@ -5,13 +5,17 @@ This module provides the main orchestration framework that coordinates
 the interaction between different analysis components.
 """
 
-from .main_pipeline import FIBSEMPipeline, create_default_pipeline
-from .batch_processor import BatchProcessor
-from .visualization import FIBSEMVisualizer
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
+try:
+    from .main_pipeline import FIBSEMPipeline, create_default_pipeline
+except ImportError:
+    # Handle relative import issues by using absolute imports
+    from main_pipeline import FIBSEMPipeline, create_default_pipeline
 
 __all__ = [
-    'FIBSEMPipeline', 'create_default_pipeline',
-    'BatchProcessor',
-    'FIBSEMVisualizer'
+    'FIBSEMPipeline', 'create_default_pipeline'
 ]
 

@@ -11,9 +11,13 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union, List, Tuple
 import logging
 
-from ..core.config import FIBSEMConfig
-from ..core.data_io import load_fibsem_data, FIBSEMData
-from ..core.preprocessing import preprocess_fibsem_data
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
+from core.config import FIBSEMConfig
+from core.data_io import load_fibsem_data, FIBSEMData
+from core.preprocessing import preprocess_fibsem_data
 
 logger = logging.getLogger(__name__)
 

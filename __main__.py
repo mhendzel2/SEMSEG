@@ -60,12 +60,12 @@ def main(argv: list[str] | None = None) -> int:
             print("Web UI app not found.")
             return 1
         # Prefer invoking the Streamlit CLI for compatibility across versions
-        cmd = [sys.executable, "-m", "streamlit", "run", "-q", str(app_path)]
+        cmd = [sys.executable, "-m", "streamlit", "run", str(app_path)]
         try:
             return subprocess.call(cmd)
         except FileNotFoundError:
             print("Streamlit is not installed. Install with: pip install streamlit")
-            print("Then run: streamlit run -q \"" + str(app_path) + "\"")
+            print("Then run: streamlit run \"" + str(app_path) + "\"")
             return 1
         except Exception as e:
             print(f"Failed to launch web UI: {e}")

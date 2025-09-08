@@ -6,3 +6,5 @@ tifffile>=2021.11.2
 PyYAML>=6.0
 Pillow>=9.0.0
 mclahe @ https://github.com/VincentStimper/mclahe/archive/numpy.zip
+zarr
+s3fs

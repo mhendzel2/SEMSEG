@@ -66,6 +66,15 @@ try:
 except Exception:
     _HAS_ZARR = False
 
+# Plotly (optional) for 3D visualization
+go: Any | None = None
+try:
+    import plotly.graph_objects as _go  # type: ignore
+    go = _go
+    _HAS_PLOTLY = True
+except Exception:
+    _HAS_PLOTLY = False
+
 # Support running as a package module or as a standalone script
 try:
     from .pipeline import create_default_pipeline  # type: ignore
@@ -104,8 +113,9 @@ ss.setdefault("segment", {"method": "watershed", "type": "traditional"})
 ss.setdefault("config", {})
 ss.setdefault("config_path", None)
 ss.setdefault("roi_queue", [])
+ss.setdefault("remote_url", "")
 
-tabs = st.tabs(["Data", "ROI", "Preprocess", "Segment", "Analyze", "Config"])
+tabs = st.tabs(["Data", "ROI", "Preprocess", "Segment", "Analyze", "3D Viewer", "Config"])
 
 def _save_uploaded_file(buffer, name: str) -> Optional[Path]:
     if buffer is None:
@@ -249,6 +259,80 @@ def _zarr_fetch(url: str, z0: int, y0: int, x0: int, dz: int, dy: int, dx: int, 
         a = a[..., 0]
     return a
 
+def _zarr_fetch_lowest(url: str, z0: int, y0: int, x0: int, dz: int, dy: int, dx: int) -> np.ndarray:
+    if not _HAS_ZARR:
+        raise RuntimeError("zarr/fsspec not installed. Install with: pip install zarr fsspec s3fs")
+    mapper = fsspec.get_mapper(url, anon=True)  # type: ignore[union-attr]
+    root: Any = zarr.open(mapper, mode='r')  # type: ignore[union-attr]
+    if hasattr(root, 'shape'):
+        arr = root  # type: ignore[assignment]
+    else:
+        g = root  # type: ignore[assignment]
+        arrays = []
+        for k, v in g.items():
+            try:
+                if hasattr(v, 'shape') and len(v.shape) >= 3:
+                    arrays.append((k, v))
+            except Exception:
+                continue
+        if not arrays:
+            raise RuntimeError("No array found in Zarr store")
+        arrays.sort(key=lambda kv: str(kv[0]))
+        arr = arrays[-1][1]
+    z1, y1, x1 = z0 + dz, y0 + dy, x0 + dx
+    sub = arr[z0:z1, y0:y1, x0:x1]
+    a = np.asarray(sub)
+    if a.ndim == 4:
+        a = a[..., 0]
+    return a
+
+def _mip(arr: np.ndarray, axis: str) -> np.ndarray:
+    if axis == 'z':
+        return np.max(arr, axis=0)
+    if axis == 'y':
+        return np.max(arr, axis=1)
+    return np.max(arr, axis=2)
+
+def _maybe_decimate(arr: np.ndarray, max_dim: int = 256) -> np.ndarray:
+    z, y, x = arr.shape[:3]
+    sz = max(1, int(np.ceil(z / max_dim)))
+    sy = max(1, int(np.ceil(y / max_dim)))
+    sx = max(1, int(np.ceil(x / max_dim)))
+    return arr[::sz, ::sy, ::sx]
+
+def _plotly_volume(arr: np.ndarray, name: str = "volume"):
+    if not _HAS_PLOTLY:
+        raise RuntimeError("plotly not installed. Install with: pip install plotly")
+    a = _maybe_decimate(arr.astype(np.float32))
+    a = (a - float(np.min(a))) / (float(np.max(a) - np.min(a)) + 1e-8)
+    zz, yy, xx = np.mgrid[0:a.shape[0], 0:a.shape[1], 0:a.shape[2]]
+    fig = go.Figure(data=go.Volume(  # type: ignore[union-attr]
+        x=xx.flatten(), y=yy.flatten(), z=zz.flatten(),
+        value=a.flatten(),
+        opacity=0.1,
+        surface_count=12,
+        colorscale='Gray'
+    ))
+    fig.update_layout(title=name, scene_aspectmode='data', margin=dict(l=0, r=0, t=30, b=0))
+    return fig
+
+def _plotly_isosurface(arr: np.ndarray, isovalue: float = 0.5, name: str = "isosurface"):
+    if not _HAS_PLOTLY:
+        raise RuntimeError("plotly not installed. Install with: pip install plotly")
+    a = _maybe_decimate(arr.astype(np.float32))
+    zz, yy, xx = np.mgrid[0:a.shape[0], 0:a.shape[1], 0:a.shape[2]]
+    fig = go.Figure(data=go.Isosurface(  # type: ignore[union-attr]
+        x=xx.flatten(), y=yy.flatten(), z=zz.flatten(),
+        value=a.flatten(),
+        isomin=isovalue, isomax=float(a.max()),
+        caps=dict(x_show=False, y_show=False, z_show=False),
+        colorscale='Viridis',
+        surface_count=2,
+        opacity=0.9
+    ))
+    fig.update_layout(title=name, scene_aspectmode='data', margin=dict(l=0, r=0, t=30, b=0))
+    return fig
+
 # Data tab
 with tabs[0]:
     st.subheader("Load Data")
@@ -269,15 +353,40 @@ with tabs[0]:
                 st.error("Please provide a valid file path or upload a file.")
     with remote_col:
         st.write("Enter an OpenOrganelle/Neuroglancer precomputed URL (e.g., gs:// or https URL)")
-        url = st.text_input("Precomputed URL", "")
+        url = st.text_input("Precomputed URL", ss.get("remote_url", ""))
+        ss["remote_url"] = url
         mip = st.number_input("MIP Level (0=highest res)", min_value=0, max_value=10, value=0, step=1)
         if not _HAS_CLOUDVOLUME:
             st.info("cloudvolume not installed. Install with: pip install cloud-volume")
         st.caption("You can define ROI in the ROI tab and then fetch.")
+        st.markdown("**Low-res remote preview**")
+        prev_z0 = st.number_input("z start (preview)", min_value=0, value=0)
+        prev_y0 = st.number_input("y start (preview)", min_value=0, value=0)
+        prev_x0 = st.number_input("x start (preview)", min_value=0, value=0)
+        prev_dz = st.number_input("depth dz (preview)", min_value=1, value=32)
+        prev_dy = st.number_input("height dy (preview)", min_value=1, value=256)
+        prev_dx = st.number_input("width dx (preview)", min_value=1, value=256)
+        if st.button("Preview remote MIPs"):
+            try:
+                u = str(url or "")
+                if u.endswith('.zarr'):
+                    vol = _zarr_fetch_lowest(u, int(prev_z0), int(prev_y0), int(prev_x0), int(prev_dz), int(prev_dy), int(prev_dx))
+                else:
+                    vol = _openorganelle_fetch(u, int(prev_z0), int(prev_y0), int(prev_x0), int(prev_dz), int(prev_dy), int(prev_dx), int(mip))
+                cmi1, cmi2, cmi3 = st.columns(3)
+                with cmi1:
+                    st.image(_mip(vol, 'z'), clamp=True, caption="MIP-Z")
+                with cmi2:
+                    st.image(_mip(vol, 'y'), clamp=True, caption="MIP-Y")
+                with cmi3:
+                    st.image(_mip(vol, 'x'), clamp=True, caption="MIP-X")
+            except Exception as e:
+                st.error(f"Remote preview failed: {e}")
 
 # ROI tab
 with tabs[1]:
     st.subheader("Region of Interest (ROI)")
+    url = ss.get("remote_url", "")
     st.write("Define subregion to process. Provide bounds in voxels (z,y,x). Use Preview to see a slice.")
     z0 = st.number_input("z start", min_value=0, value=0)
     dz = st.number_input("depth (dz)", min_value=1, value=32)
@@ -480,6 +589,57 @@ with tabs[4]:
                 np.save(buf2, seg)
                 buf2.seek(0)
                 st.download_button("Download segmentation (.npy)", buf2, file_name="segmentation.npy")
+
+# 3D Viewer tab
+with tabs[5]:
+    st.subheader("3D Viewer")
+    st.caption("Interactive 3D volume and surface previews (decimated to fit in browser).")
+    src = ss.get("roi_file") or ss.get("input_path")
+    seg_res = st.session_state.get("_last_result", {}).get("segmentation_results", {}) if st.session_state.get("_last_result") else {}
+    seg_arr = seg_res.get("segmentation") if isinstance(seg_res, dict) else None
+    view_mode = st.selectbox("View", ["MIPs","Volume (intensity)", "Isosurface (segmentation)"])
+    if view_mode == "MIPs":
+        if src and Path(src).exists():
+            arr = None
+            try:
+                if str(src).endswith('.npy'):
+                    arr = np.load(src)
+            except Exception:
+                arr = None
+            if isinstance(arr, np.ndarray) and arr.ndim == 3:
+                cm1, cm2, cm3 = st.columns(3)
+                with cm1: st.image(_mip(arr, 'z'), clamp=True, caption="MIP-Z")
+                with cm2: st.image(_mip(arr, 'y'), clamp=True, caption="MIP-Y")
+                with cm3: st.image(_mip(arr, 'x'), clamp=True, caption="MIP-X")
+            else:
+                st.info("Load an ROI (.npy) to view MIPs.")
+        else:
+            st.info("Select or fetch an ROI to view MIPs.")
+    elif view_mode == "Volume (intensity)":
+        if not _HAS_PLOTLY:
+            st.info("Install plotly for 3D rendering: pip install plotly")
+        elif src and Path(src).exists() and str(src).endswith('.npy'):
+            try:
+                vol = np.load(src)
+                fig = _plotly_volume(vol, name="Intensity Volume")
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Volume render failed: {e}")
+        else:
+            st.info("Volume rendering requires a loaded ROI (.npy). Use ROI tab to fetch.")
+    else:
+        if not _HAS_PLOTLY:
+            st.info("Install plotly for 3D rendering: pip install plotly")
+        elif seg_arr is None:
+            st.info("Run segmentation first to view isosurface.")
+        else:
+            try:
+                iso = (seg_arr > 0).astype(np.float32)
+                iso_val = st.slider("Isovalue", min_value=0.1, max_value=1.0, value=0.5)
+                fig = _plotly_isosurface(iso, isovalue=float(iso_val), name="Segmentation Surface")
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Isosurface failed: {e}")
 
 # Config tab
 with tabs[5]:

@@ -32,19 +32,26 @@ def run_diagnostics():
     print(f"Python version: {sys.version}")
     
     # Check required packages
+    # Map display names to actual import names
     required_packages = [
-        'numpy', 'scipy', 'scikit-image', 'matplotlib', 
-        'pandas', 'h5py', 'tifffile', 'yaml'
+        ("numpy", "numpy"),
+        ("scipy", "scipy"),
+        ("scikit-image", "skimage"),
+        ("matplotlib", "matplotlib"),
+        ("pandas", "pandas"),
+        ("h5py", "h5py"),
+        ("tifffile", "tifffile"),
+        ("yaml", "yaml"),
     ]
     
     missing_packages = []
-    for package in required_packages:
+    for display_name, import_name in required_packages:
         try:
-            __import__(package)
-            print(f"✓ {package}")
+            __import__(import_name)
+            print(f"✓ {display_name}")
         except ImportError:
-            print(f"✗ {package} (missing)")
-            missing_packages.append(package)
+            print(f"✗ {display_name} (missing)")
+            missing_packages.append(display_name)
     
     # Check optional packages
     optional_packages = ['torch', 'cv2']

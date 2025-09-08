@@ -9,13 +9,27 @@ or via CLI:
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from typing import Optional
 
 import streamlit as st  # type: ignore
 
-from .pipeline import create_default_pipeline
+# Support running as a package module or as a standalone script
+try:
+    from .pipeline import create_default_pipeline  # type: ignore
+except Exception:
+    try:
+        # Attempt absolute import when executed outside package context
+        from SEMSEG.pipeline import create_default_pipeline  # type: ignore
+    except Exception:
+        # As a last resort, add parent of this file to sys.path
+        pkg_root = Path(__file__).resolve().parent
+        repo_root = pkg_root.parent
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from SEMSEG.pipeline import create_default_pipeline  # type: ignore
 
 
 st.set_page_config(page_title="SEMSEG Web UI", layout="wide")

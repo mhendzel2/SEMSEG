@@ -51,83 +51,6 @@ class FIBSEMData:
         else:
             raise ValueError("Axis must be 0, 1, or 2")
 
-<<<<<<< HEAD
-
-
-def load_fibsem_data(file_path: Union[str, Path],
-                     voxel_size: Optional[Tuple[float, float, float]] = None,
-                     resolution_level: Optional[int] = -1) -> Union[FIBSEMData, zarr.Group]:
-    """
-    Load FIB-SEM data from various file formats or OpenOrganelle.
-
-    For OpenOrganelle datasets, this function opens a remote connection
-    and can load a specific resolution level or return the Zarr group.
-
-    Args:
-        file_path: Path to the data file or OpenOrganelle ID (e.g., "oo:jrc_hela-2")
-        voxel_size: Optional voxel size (z, y, x) in micrometers
-        resolution_level: For multiscale datasets, the resolution level to load.
-                          -1 loads the lowest resolution (default).
-                          Other integers select from the available resolutions (e.g., 0 for highest).
-                          If None, the remote Zarr group is returned without loading data.
-
-    Returns:
-        FIBSEMData object, or a Zarr group if resolution_level is None for an OpenOrganelle dataset.
-    """
-    if isinstance(file_path, str) and file_path.startswith("oo:"):
-        dataset_name = file_path.split(":")[1]
-        try:
-            s3 = s3fs.S3FileSystem(anon=True)
-            url = f"s3://janelia-cosem-datasets/{dataset_name}/{dataset_name}.zarr"
-            store = s3fs.S3Map(root=url, s3=s3, check=False)
-            zarr_group = zarr.open(store, mode='r')
-
-            if resolution_level is None:
-                return zarr_group
-
-            # Handle multiscale data
-            if 'multiscales' in zarr_group.attrs:
-                datasets = zarr_group.attrs['multiscales'][0]['datasets']
-
-                if resolution_level == -1:
-                    # Load the lowest resolution (last in the list)
-                    level_path = datasets[-1]['path']
-                elif resolution_level < len(datasets):
-                    level_path = datasets[resolution_level]['path']
-                else:
-                    raise ValueError(f"Resolution level {resolution_level} is out of bounds for dataset {dataset_name} with {len(datasets)} levels.")
-
-                data = np.array(zarr_group[level_path])
-            else:
-                # If no multiscales, treat as a single array
-                data = np.array(zarr_group)
-
-        except Exception as e:
-            raise IOError(f"Failed to load OpenOrganelle dataset '{dataset_name}': {e}")
-    else:
-        file_path = Path(file_path)
-
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        logger.info(f"Loading FIB-SEM data from {file_path}")
-
-        # Determine file format and load accordingly
-        if file_path.suffix.lower() in ['.tif', '.tiff']:
-            data = _load_tiff_stack(file_path)
-        elif file_path.suffix.lower() in ['.h5', '.hdf5']:
-            data = _load_hdf5(file_path)
-        elif file_path.suffix.lower() == '.npy':
-            data = _load_numpy(file_path)
-        elif file_path.suffix.lower() == '.raw':
-            data = _load_raw_binary(file_path)
-        else:
-            # Try to load as numpy array first
-            try:
-                data = np.load(file_path)
-            except:
-                raise ValueError(f"Unsupported file format: {file_path.suffix}")
-=======
 def load_fibsem_data(file_path: Union[str, Path], 
                      voxel_size: Optional[Tuple[float, float, float]] = None,
                      raw_shape: Optional[Tuple[int, int, int]] = None,
@@ -166,7 +89,6 @@ def load_fibsem_data(file_path: Union[str, Path],
             data = np.load(file_path)
         except:
             raise ValueError(f"Unsupported file format: {file_path.suffix}")
->>>>>>> refactor-and-improve
     
     # Ensure data is 3D
     if data.ndim == 2:
@@ -235,34 +157,6 @@ def _load_numpy(file_path: Path) -> np.ndarray:
     """Load numpy array file."""
     return np.load(file_path)
 
-<<<<<<< HEAD
-def _load_raw_binary(file_path: Path) -> np.ndarray:
-    """Load raw binary data (requires shape information)."""
-    # This is a simplified version - in practice, you'd need shape info
-    data = np.fromfile(file_path, dtype=np.uint8)
-    
-    # Try to guess dimensions (this is very basic)
-    total_size = len(data)
-    
-    # Common FIB-SEM dimensions
-    possible_shapes = [
-        (100, 512, 512),
-        (200, 512, 512),
-        (500, 1024, 1024),
-        (1000, 2048, 2048)
-    ]
-    
-    for shape in possible_shapes:
-        if np.prod(shape) == total_size:
-            return data.reshape(shape)
-    
-    # If no standard shape works, make it cubic-ish
-    cube_size = int(np.cbrt(total_size))
-    if cube_size ** 3 == total_size:
-        return data.reshape(cube_size, cube_size, cube_size)
-    
-    raise ValueError("Cannot determine shape for raw binary data")
-=======
 def _load_raw_binary(file_path: Path,
                        shape: Optional[Tuple[int, int, int]] = None,
                        dtype: Union[str, np.dtype] = np.uint8) -> np.ndarray:
@@ -276,7 +170,6 @@ def _load_raw_binary(file_path: Path,
         raise ValueError(f"Expected {np.prod(shape)} elements for shape {shape}, but found {data.size}")
 
     return data.reshape(shape)
->>>>>>> refactor-and-improve
 
 def save_fibsem_data(data: Union[FIBSEMData, np.ndarray], 
                      file_path: Union[str, Path],
@@ -384,83 +277,6 @@ def _save_numpy(data: np.ndarray, file_path: Path) -> None:
     """Save data as numpy array."""
     np.save(file_path, data)
 
-<<<<<<< HEAD
-
-def load_subvolume(
-    dataset_path: str,
-    roi_slices: Tuple[slice, slice, slice],
-    preview_resolution_level: int = -1,
-) -> FIBSEMData:
-    """
-    Load a sub-volume from a remote OpenOrganelle dataset.
-
-    This function translates ROI coordinates from a lower-resolution preview
-    to the highest resolution and downloads only the selected region.
-
-    Args:
-        dataset_path: The OpenOrganelle dataset identifier (e.g., "oo:jrc_hela-2").
-        roi_slices: A tuple of slices for (z, y, x) defining the ROI on the preview resolution.
-        preview_resolution_level: The resolution level on which the ROI was defined.
-                                  -1 corresponds to the lowest resolution.
-
-    Returns:
-        A FIBSEMData object containing the high-resolution sub-volume.
-    """
-    if not (isinstance(dataset_path, str) and dataset_path.startswith("oo:")):
-        raise ValueError("This function is designed for OpenOrganelle datasets only.")
-
-    # Open the remote Zarr group without loading any data
-    zarr_group = load_fibsem_data(dataset_path, resolution_level=None)
-
-    if not isinstance(zarr_group, zarr.Group) or 'multiscales' not in zarr_group.attrs:
-        raise ValueError("Dataset is not a valid multiscale OME-Zarr.")
-
-    multiscale_meta = zarr_group.attrs['multiscales'][0]
-    datasets = multiscale_meta['datasets']
-
-    # Get metadata for the highest resolution (level 0)
-    high_res_meta = datasets[0]
-    high_res_path = high_res_meta['path']
-    high_res_transforms = high_res_meta.get('coordinateTransformations', [{'type': 'scale', 'scale': [1, 1, 1]}])
-    high_res_scale = next(t['scale'] for t in high_res_transforms if t['type'] == 'scale')
-
-    # Get metadata for the preview resolution
-    if preview_resolution_level == -1:
-        preview_res_meta = datasets[-1]
-    elif preview_resolution_level < len(datasets):
-        preview_res_meta = datasets[preview_resolution_level]
-    else:
-        raise ValueError(f"Invalid preview resolution level: {preview_resolution_level}")
-
-    preview_res_transforms = preview_res_meta.get('coordinateTransformations', [{'type': 'scale', 'scale': [1, 1, 1]}])
-    preview_res_scale = next(t['scale'] for t in preview_res_transforms if t['type'] == 'scale')
-
-    # Calculate the scaling factor between the preview and high-res data
-    # Assuming axes are ordered (z, y, x)
-    scale_factors = [
-        preview_s / high_s for preview_s, high_s in zip(preview_res_scale, high_res_scale)
-    ]
-
-    # Scale the ROI slices
-    scaled_slices = []
-    for i, s in enumerate(roi_slices):
-        start = int(s.start * scale_factors[i]) if s.start is not None else 0
-        stop = int(s.stop * scale_factors[i]) if s.stop is not None else -1
-        scaled_slices.append(slice(start, stop))
-
-    # Get the highest resolution data array
-    high_res_array = zarr_group[high_res_path]
-
-    # Slice the array to get the sub-volume. This performs the partial download.
-    subvolume_data = np.array(high_res_array[tuple(scaled_slices)])
-
-    # For voxel size, we should use the one from the high-resolution data
-    voxel_size = tuple(high_res_scale)
-
-    return FIBSEMData(data=subvolume_data, voxel_size=voxel_size)
-
-=======
->>>>>>> refactor-and-improve
 def get_file_info(file_path: Union[str, Path]) -> Dict[str, Any]:
     """
     Get information about a FIB-SEM data file without loading it.

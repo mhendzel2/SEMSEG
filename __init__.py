@@ -63,21 +63,7 @@ def run_diagnostics():
         print("\n✓ All required packages available")
         return True
 
-<<<<<<< HEAD
-def run_gui():
-    """Launch the FIB-SEM GUI application."""
-    try:
-        from gui.main_gui import main as gui_main
-        gui_main()
-    except ImportError as e:
-        print(f"Error importing GUI: {e}")
-        print("GUI may not be available in this environment.")
-        print("Try running: python launch_gui.py")
-    except Exception as e:
-        print(f"Error launching GUI: {e}")
 
-=======
->>>>>>> refactor-and-improve
 def test_installation():
     """Test basic functionality."""
     print("Testing FIB-SEM Program Installation")

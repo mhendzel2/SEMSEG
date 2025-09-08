@@ -175,42 +175,24 @@ class FIBSEMPipeline:
             config_params.update(kwargs)  # Override with provided parameters
             
             if method_type == 'traditional':
-<<<<<<< HEAD
-                segmentation = self._segment_traditional(input_data, method, config_params)
-            elif method_type == 'deep_learning':
-                segmentation = self._segment_deep_learning(input_data, method, config_params)
-=======
                 segmentation_result = segmentation.segment_traditional(input_data, method, config_params)
             elif method_type == 'deep_learning':
                 segmentation_result = segmentation.segment_deep_learning(input_data, method, config_params)
->>>>>>> refactor-and-improve
             else:
                 raise ValueError(f"Unknown method type: {method_type}")
             
             duration = time.time() - start_time
             
-<<<<<<< HEAD
-            self.segmentation_result = segmentation
-            
-            result = {
-                'success': True,
-                'segmentation': segmentation,
-=======
             self.segmentation_result = segmentation_result
             
             result = {
                 'success': True,
                 'segmentation': segmentation_result,
->>>>>>> refactor-and-improve
                 'method': method,
                 'method_type': method_type,
                 'parameters': config_params,
                 'duration': duration,
-<<<<<<< HEAD
-                'num_labels': len(np.unique(segmentation)) - 1  # Exclude background
-=======
                 'num_labels': len(np.unique(segmentation_result)) - 1  # Exclude background
->>>>>>> refactor-and-improve
             }
             
             self.processing_history.append({
@@ -235,281 +217,18 @@ class FIBSEMPipeline:
                 'duration': time.time() - start_time
             }
     
-<<<<<<< HEAD
-    def _segment_traditional(self, data: np.ndarray, method: str, params: Dict[str, Any]) -> np.ndarray:
-        """Apply traditional segmentation method."""
-        if method == 'watershed':
-            return self._watershed_segmentation(data, params)
-        elif method == 'thresholding':
-            return self._threshold_segmentation(data, params)
-        elif method == 'morphology':
-            return self._morphological_segmentation(data, params)
-        else:
-            raise ValueError(f"Unknown traditional method: {method}")
-    
-    def _segment_deep_learning(self, data: np.ndarray, method: str, params: Dict[str, Any]) -> np.ndarray:
-        """Apply deep learning segmentation method."""
-        from core.unet import unet_model, predict_slices
-        from skimage import measure
-
-        logger.info(f"Applying deep learning method: {method}")
-
-        # In a real application, you would load a pre-trained model
-        # For this demo, we'll create a new model.
-        # The model architecture could be chosen based on the 'method' parameter.
-
-        input_size = (params.get("input_height", 256), params.get("input_width", 256), 1)
-        num_classes = params.get("num_classes", 2) # Assume binary: background + foreground
-
-        model = unet_model(input_size=input_size, num_classes=num_classes)
-
-        # Here you would typically load weights, e.g., model.load_weights('path/to/model.h5')
-        logger.warning("No pre-trained model weights loaded. Using randomly initialized U-Net.")
-
-        # Predict slice by slice
-        predictions = predict_slices(model, data)
-
-        # Convert probabilities to labels
-        # For multi-class, this would be argmax
-        if num_classes > 1:
-            labeled_image = np.argmax(predictions, axis=-1)
-        else:
-            # For binary, threshold the single output channel
-            threshold = params.get("threshold", 0.5)
-            labeled_image = (predictions > threshold).astype(np.uint8)
-
-        # Post-process to get instance labels if needed
-        # This uses connected components on the semantic segmentation
-        instance_labels = measure.label(labeled_image)
-
-        return instance_labels
-    
-    def _watershed_segmentation(self, data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
-        """Perform watershed segmentation."""
-        from scipy import ndimage
-        from skimage import segmentation, filters
-        try:
-            from skimage.feature import peak_local_maxima
-        except ImportError:
-            # Fallback for older scikit-image versions
-            def peak_local_maxima(image, min_distance=1, threshold_abs=None, **kwargs):
-                from skimage.morphology import local_maxima
-                from skimage.measure import label, regionprops
-                
-                # Find local maxima
-                maxima = local_maxima(image)
-                
-                if threshold_abs is not None:
-                    maxima = maxima & (image >= threshold_abs)
-                
-                # Label and get centroids
-                labeled_maxima = label(maxima)
-                props = regionprops(labeled_maxima)
-                
-                # Return coordinates
-                coords = [tuple(map(int, prop.centroid)) for prop in props]
-                return coords
-        
-        # Get parameters
-        min_distance = params.get('min_distance', 20)
-        threshold_rel = params.get('threshold_rel', 0.6)
-        
-        # Convert to binary if needed
-        if data.dtype != bool:
-            threshold = filters.threshold_otsu(data)
-            binary = data > threshold
-        else:
-            binary = data
-        
-        # Compute distance transform
-        distance = ndimage.distance_transform_edt(binary)
-        
-        # Find local maxima as markers
-        if data.ndim == 3:
-            # For 3D data, find maxima in each slice
-            markers = np.zeros_like(distance, dtype=np.int32)
-            label_counter = 1
-            
-            for i in range(distance.shape[0]):
-                slice_distance = distance[i]
-                if slice_distance.max() > 0:
-                    local_maxima = peak_local_maxima(
-                        slice_distance,
-                        min_distance=min_distance,
-                        threshold_abs=threshold_rel * slice_distance.max()
-                    )
-                    
-                    for coord in local_maxima:
-                        markers[i, coord[0], coord[1]] = label_counter
-                        label_counter += 1
-        else:
-            # For 2D data
-            local_maxima = peak_local_maxima(
-                distance,
-                min_distance=min_distance,
-                threshold_abs=threshold_rel * distance.max()
-            )
-            
-            markers = np.zeros_like(distance, dtype=np.int32)
-            for idx, coord in enumerate(local_maxima):
-                markers[coord[0], coord[1]] = idx + 1
-        
-        # Apply watershed
-        labels = segmentation.watershed(-distance, markers, mask=binary)
-        
-        return labels
-    
-    def _threshold_segmentation(self, data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
-        """Perform threshold-based segmentation."""
-        from skimage import filters, measure
-        
-        method = params.get('method', 'otsu')
-        
-        if method == 'otsu':
-            threshold = filters.threshold_otsu(data)
-        elif method == 'li':
-            threshold = filters.threshold_li(data)
-        elif method == 'yen':
-            threshold = filters.threshold_yen(data)
-        else:
-            threshold = filters.threshold_otsu(data)
-        
-        binary = data > threshold
-        labels = measure.label(binary)
-        
-        return labels
-    
-    def _morphological_segmentation(self, data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
-        """Perform morphology-based segmentation."""
-        from skimage import morphology, measure, filters
-        
-        # First threshold the data
-        threshold = filters.threshold_otsu(data)
-        binary = data > threshold
-        
-        # Apply morphological operations
-        operation = params.get('operation', 'opening')
-        radius = params.get('radius', 3)
-        
-        if data.ndim == 3:
-            selem = morphology.ball(radius)
-        else:
-            selem = morphology.disk(radius)
-        
-        if operation == 'opening':
-            processed = morphology.opening(binary, selem)
-        elif operation == 'closing':
-            processed = morphology.closing(binary, selem)
-        elif operation == 'erosion':
-            processed = morphology.erosion(binary, selem)
-        elif operation == 'dilation':
-            processed = morphology.dilation(binary, selem)
-        else:
-            processed = binary
-        
-        # Label connected components
-        labels = measure.label(processed)
-        
-        return labels
-    
-    def quantify_morphology(self, min_size: int = 10, **kwargs) -> Dict[str, Any]:
-        """
-        Quantify morphological properties of segmented objects.
-        
-        Args:
-            min_size: Minimum object size (in pixels/voxels) to analyze.
-
-        Returns:
-            Dictionary with morphological analysis results.
-=======
     def quantify_morphology(self, **kwargs) -> Dict[str, Any]:
         """
         Quantify morphological properties of segmented objects.
         
         Returns:
             Dictionary with morphological analysis results
->>>>>>> refactor-and-improve
         """
         if self.segmentation_result is None:
             return {'success': False, 'error': 'No segmentation available'}
         
         start_time = time.time()
         
-<<<<<<< HEAD
-        try:
-            logger.info(f"Quantifying morphological properties (min_size={min_size})")
-            
-            from skimage import measure
-            
-            # Get region properties
-            props = measure.regionprops(self.segmentation_result)
-            
-            object_properties = []
-            
-            for prop in props:
-                if prop.area >= min_size:
-                    prop_dict = {
-                        'label': prop.label,
-                        'num_voxels': prop.area,
-                        'centroid': prop.centroid,
-                        'bounding_box': prop.bbox,
-                        'equivalent_diameter': prop.equivalent_diameter,
-                    }
-                    
-                    # 3D-specific properties
-                    if self.segmentation_result.ndim == 3:
-                        voxel_volume = np.prod(self.voxel_spacing)
-                        prop_dict['volume_nm3'] = prop.area * voxel_volume
-
-                        # Surface area and sphericity (can be computationally expensive)
-                        try:
-                            # Extract the object mask
-                            obj_mask = self.segmentation_result == prop.label
-
-                            # Marching cubes to get surface mesh
-                            verts, faces, _, _ = measure.marching_cubes(obj_mask, spacing=self.voxel_spacing)
-                            surface_area = measure.mesh_surface_area(verts, faces)
-                            prop_dict['surface_area_nm2'] = surface_area
-
-                            # Sphericity calculation
-                            # Sphericity = (pi^(1/3) * (6 * Volume)^(2/3)) / SurfaceArea
-                            if surface_area > 0:
-                                volume = prop_dict['volume_nm3']
-                                sphericity = (np.pi**(1/3) * (6 * volume)**(2/3)) / surface_area
-                                prop_dict['sphericity'] = sphericity
-
-                        except (RuntimeError, ValueError) as e:
-                            logger.warning(f"Could not calculate surface area for label {prop.label}: {e}")
-
-                    object_properties.append(prop_dict)
-            
-            duration = time.time() - start_time
-            
-            result = {
-                'success': True,
-                'num_objects': len(object_properties),
-                'object_properties': object_properties,
-                'duration': duration
-            }
-            
-            self.processing_history.append({
-                'step': 'quantify_morphology',
-                'duration': duration,
-                'parameters': {'min_size': min_size},
-                'result': {'num_objects': len(object_properties)}
-            })
-            
-            logger.info(f"Morphological quantification completed: {len(object_properties)} objects, duration {duration:.2f}s")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in morphological quantification: {e}")
-            return {
-                'success': False,
-                'error': str(e),
-                'duration': time.time() - start_time
-            }
-=======
         result = quantification.quantify_morphology(
             self.segmentation_result,
             self.voxel_spacing,
@@ -527,7 +246,6 @@ class FIBSEMPipeline:
             })
 
         return result
->>>>>>> refactor-and-improve
     
     def quantify_particles(self, min_size: int = 50, **kwargs) -> Dict[str, Any]:
         """
@@ -544,35 +262,6 @@ class FIBSEMPipeline:
         
         start_time = time.time()
         
-<<<<<<< HEAD
-        try:
-            logger.info(f"Quantifying particles (min_size={min_size})")
-            
-            from skimage import measure
-            
-            props = measure.regionprops(self.segmentation_result)
-            
-            particles = []
-            for prop in props:
-                if prop.area >= min_size:
-                    particle_info = {
-                        'label': prop.label,
-                        'area': prop.area,
-                        'centroid': prop.centroid,
-                        'equivalent_diameter': prop.equivalent_diameter
-                    }
-                    particles.append(particle_info)
-            
-            duration = time.time() - start_time
-            
-            result = {
-                'success': True,
-                'num_particles': len(particles),
-                'particle_properties': particles,
-                'duration': duration
-            }
-            
-=======
         result = quantification.quantify_particles(
             self.segmentation_result,
             min_size,
@@ -583,31 +272,14 @@ class FIBSEMPipeline:
         result['duration'] = duration
 
         if result['success']:
->>>>>>> refactor-and-improve
             self.processing_history.append({
                 'step': 'quantify_particles',
                 'duration': duration,
                 'parameters': {'min_size': min_size},
-<<<<<<< HEAD
-                'result': {'num_particles': len(particles)}
-            })
-            
-            logger.info(f"Particle quantification completed: {len(particles)} particles, duration {duration:.2f}s")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in particle quantification: {e}")
-            return {
-                'success': False,
-                'error': str(e),
-                'duration': time.time() - start_time
-            }
-=======
                 'result': {'num_particles': result['num_particles']}
             })
 
         return result
->>>>>>> refactor-and-improve
     
     def run_complete_pipeline(self, data_path: Union[str, Path],
                               segmentation_method: str = 'watershed',

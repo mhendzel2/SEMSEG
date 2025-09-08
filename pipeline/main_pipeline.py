@@ -11,13 +11,11 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union, List, Tuple
 import logging
 
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent))
-
-from core.config import FIBSEMConfig
-from core.data_io import load_fibsem_data, FIBSEMData
-from core.preprocessing import preprocess_fibsem_data
+from ..core.config import FIBSEMConfig
+from ..core.data_io import load_fibsem_data, FIBSEMData
+from ..core.preprocessing import preprocess_fibsem_data
+from ..core import segmentation
+from ..core import quantification
 
 logger = logging.getLogger(__name__)
 
@@ -177,24 +175,42 @@ class FIBSEMPipeline:
             config_params.update(kwargs)  # Override with provided parameters
             
             if method_type == 'traditional':
+<<<<<<< HEAD
                 segmentation = self._segment_traditional(input_data, method, config_params)
             elif method_type == 'deep_learning':
                 segmentation = self._segment_deep_learning(input_data, method, config_params)
+=======
+                segmentation_result = segmentation.segment_traditional(input_data, method, config_params)
+            elif method_type == 'deep_learning':
+                segmentation_result = segmentation.segment_deep_learning(input_data, method, config_params)
+>>>>>>> refactor-and-improve
             else:
                 raise ValueError(f"Unknown method type: {method_type}")
             
             duration = time.time() - start_time
             
+<<<<<<< HEAD
             self.segmentation_result = segmentation
             
             result = {
                 'success': True,
                 'segmentation': segmentation,
+=======
+            self.segmentation_result = segmentation_result
+            
+            result = {
+                'success': True,
+                'segmentation': segmentation_result,
+>>>>>>> refactor-and-improve
                 'method': method,
                 'method_type': method_type,
                 'parameters': config_params,
                 'duration': duration,
+<<<<<<< HEAD
                 'num_labels': len(np.unique(segmentation)) - 1  # Exclude background
+=======
+                'num_labels': len(np.unique(segmentation_result)) - 1  # Exclude background
+>>>>>>> refactor-and-improve
             }
             
             self.processing_history.append({
@@ -219,6 +235,7 @@ class FIBSEMPipeline:
                 'duration': time.time() - start_time
             }
     
+<<<<<<< HEAD
     def _segment_traditional(self, data: np.ndarray, method: str, params: Dict[str, Any]) -> np.ndarray:
         """Apply traditional segmentation method."""
         if method == 'watershed':
@@ -404,12 +421,21 @@ class FIBSEMPipeline:
 
         Returns:
             Dictionary with morphological analysis results.
+=======
+    def quantify_morphology(self, **kwargs) -> Dict[str, Any]:
+        """
+        Quantify morphological properties of segmented objects.
+        
+        Returns:
+            Dictionary with morphological analysis results
+>>>>>>> refactor-and-improve
         """
         if self.segmentation_result is None:
             return {'success': False, 'error': 'No segmentation available'}
         
         start_time = time.time()
         
+<<<<<<< HEAD
         try:
             logger.info(f"Quantifying morphological properties (min_size={min_size})")
             
@@ -483,6 +509,25 @@ class FIBSEMPipeline:
                 'error': str(e),
                 'duration': time.time() - start_time
             }
+=======
+        result = quantification.quantify_morphology(
+            self.segmentation_result,
+            self.voxel_spacing,
+            **kwargs
+        )
+
+        duration = time.time() - start_time
+        result['duration'] = duration
+
+        if result['success']:
+            self.processing_history.append({
+                'step': 'quantify_morphology',
+                'duration': duration,
+                'result': {'num_objects': result['morphological_analysis']['num_objects']}
+            })
+
+        return result
+>>>>>>> refactor-and-improve
     
     def quantify_particles(self, min_size: int = 50, **kwargs) -> Dict[str, Any]:
         """
@@ -499,6 +544,7 @@ class FIBSEMPipeline:
         
         start_time = time.time()
         
+<<<<<<< HEAD
         try:
             logger.info(f"Quantifying particles (min_size={min_size})")
             
@@ -526,10 +572,23 @@ class FIBSEMPipeline:
                 'duration': duration
             }
             
+=======
+        result = quantification.quantify_particles(
+            self.segmentation_result,
+            min_size,
+            **kwargs
+        )
+
+        duration = time.time() - start_time
+        result['duration'] = duration
+
+        if result['success']:
+>>>>>>> refactor-and-improve
             self.processing_history.append({
                 'step': 'quantify_particles',
                 'duration': duration,
                 'parameters': {'min_size': min_size},
+<<<<<<< HEAD
                 'result': {'num_particles': len(particles)}
             })
             
@@ -543,6 +602,12 @@ class FIBSEMPipeline:
                 'error': str(e),
                 'duration': time.time() - start_time
             }
+=======
+                'result': {'num_particles': result['num_particles']}
+            })
+
+        return result
+>>>>>>> refactor-and-improve
     
     def run_complete_pipeline(self, data_path: Union[str, Path],
                               segmentation_method: str = 'watershed',

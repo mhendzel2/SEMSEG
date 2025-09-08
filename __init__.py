@@ -15,10 +15,9 @@ __email__ = "support@manus.ai"
 
 # Import main components for easy access
 try:
-    from pipeline.main_pipeline import FIBSEMPipeline, create_default_pipeline
-    from core.config import FIBSEMConfig
-    from core.data_io import load_fibsem_data
-    from gui.main_gui import FIBSEMGUIApp
+    from .pipeline.main_pipeline import FIBSEMPipeline, create_default_pipeline
+    from .core.config import FIBSEMConfig
+    from .core.data_io import load_fibsem_data
 except ImportError:
     # Handle import errors gracefully during development
     pass
@@ -64,6 +63,7 @@ def run_diagnostics():
         print("\n✓ All required packages available")
         return True
 
+<<<<<<< HEAD
 def run_gui():
     """Launch the FIB-SEM GUI application."""
     try:
@@ -76,6 +76,8 @@ def run_gui():
     except Exception as e:
         print(f"Error launching GUI: {e}")
 
+=======
+>>>>>>> refactor-and-improve
 def test_installation():
     """Test basic functionality."""
     print("Testing FIB-SEM Program Installation")

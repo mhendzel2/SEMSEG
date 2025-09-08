@@ -10,9 +10,6 @@ import os
 from pathlib import Path
 from typing import Union, Tuple, Optional, Dict, Any
 import logging
-import requests
-import zarr
-import s3fs
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -54,6 +51,7 @@ class FIBSEMData:
         else:
             raise ValueError("Axis must be 0, 1, or 2")
 
+<<<<<<< HEAD
 
 
 def load_fibsem_data(file_path: Union[str, Path],
@@ -129,6 +127,46 @@ def load_fibsem_data(file_path: Union[str, Path],
                 data = np.load(file_path)
             except:
                 raise ValueError(f"Unsupported file format: {file_path.suffix}")
+=======
+def load_fibsem_data(file_path: Union[str, Path], 
+                     voxel_size: Optional[Tuple[float, float, float]] = None,
+                     raw_shape: Optional[Tuple[int, int, int]] = None,
+                     raw_dtype: Union[str, np.dtype] = np.uint8) -> FIBSEMData:
+    """
+    Load FIB-SEM data from various file formats.
+    
+    Args:
+        file_path: Path to the data file
+        voxel_size: Optional voxel size (z, y, x) in micrometers
+        raw_shape: Shape of the data for raw binary files
+        raw_dtype: Data type for raw binary files
+        
+    Returns:
+        FIBSEMData object containing the loaded data
+    """
+    file_path = Path(file_path)
+    
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    
+    logger.info(f"Loading FIB-SEM data from {file_path}")
+    
+    # Determine file format and load accordingly
+    if file_path.suffix.lower() in ['.tif', '.tiff']:
+        data = _load_tiff_stack(file_path)
+    elif file_path.suffix.lower() in ['.h5', '.hdf5']:
+        data = _load_hdf5(file_path)
+    elif file_path.suffix.lower() == '.npy':
+        data = _load_numpy(file_path)
+    elif file_path.suffix.lower() == '.raw':
+        data = _load_raw_binary(file_path, shape=raw_shape, dtype=raw_dtype)
+    else:
+        # Try to load as numpy array first
+        try:
+            data = np.load(file_path)
+        except:
+            raise ValueError(f"Unsupported file format: {file_path.suffix}")
+>>>>>>> refactor-and-improve
     
     # Ensure data is 3D
     if data.ndim == 2:
@@ -197,6 +235,7 @@ def _load_numpy(file_path: Path) -> np.ndarray:
     """Load numpy array file."""
     return np.load(file_path)
 
+<<<<<<< HEAD
 def _load_raw_binary(file_path: Path) -> np.ndarray:
     """Load raw binary data (requires shape information)."""
     # This is a simplified version - in practice, you'd need shape info
@@ -223,6 +262,21 @@ def _load_raw_binary(file_path: Path) -> np.ndarray:
         return data.reshape(cube_size, cube_size, cube_size)
     
     raise ValueError("Cannot determine shape for raw binary data")
+=======
+def _load_raw_binary(file_path: Path,
+                       shape: Optional[Tuple[int, int, int]] = None,
+                       dtype: Union[str, np.dtype] = np.uint8) -> np.ndarray:
+    """Load raw binary data."""
+    if shape is None:
+        raise ValueError("Shape must be provided for raw binary files")
+    
+    data = np.fromfile(file_path, dtype=dtype)
+    
+    if np.prod(shape) != data.size:
+        raise ValueError(f"Expected {np.prod(shape)} elements for shape {shape}, but found {data.size}")
+
+    return data.reshape(shape)
+>>>>>>> refactor-and-improve
 
 def save_fibsem_data(data: Union[FIBSEMData, np.ndarray], 
                      file_path: Union[str, Path],
@@ -330,6 +384,7 @@ def _save_numpy(data: np.ndarray, file_path: Path) -> None:
     """Save data as numpy array."""
     np.save(file_path, data)
 
+<<<<<<< HEAD
 
 def load_subvolume(
     dataset_path: str,
@@ -404,6 +459,8 @@ def load_subvolume(
 
     return FIBSEMData(data=subvolume_data, voxel_size=voxel_size)
 
+=======
+>>>>>>> refactor-and-improve
 def get_file_info(file_path: Union[str, Path]) -> Dict[str, Any]:
     """
     Get information about a FIB-SEM data file without loading it.

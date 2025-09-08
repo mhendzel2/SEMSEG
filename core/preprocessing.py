@@ -31,8 +31,7 @@ def remove_noise(image: np.ndarray,
     
     if method == 'gaussian':
         sigma = kwargs.get('sigma', 1.0)
-        result = filters.gaussian(image, sigma=sigma, preserve_range=True)
-        return result.astype(image.dtype)
+        return filters.gaussian(image, sigma=sigma, preserve_range=True)
     
     elif method == 'nl_means':
         # Recommended for high-quality denoising, can be slow
@@ -75,15 +74,11 @@ def remove_noise(image: np.ndarray,
         return denoised.astype(image.dtype)
     
     elif method == 'median':
-        disk_size = kwargs.get('disk_size', 3)
+        size = kwargs.get('size', 3)
         if image.ndim == 3:
-            # Apply median filter slice by slice for 3D data
-            result = np.zeros_like(image)
-            for i in range(image.shape[0]):
-                result[i] = filters.median(image[i], morphology.disk(disk_size))
-            return result
+            return ndimage.median_filter(image, size=size)
         else:
-            return filters.median(image, morphology.disk(disk_size))
+            return filters.median(image, morphology.disk(size))
     
     elif method == 'wiener':
         noise_variance = kwargs.get('noise_variance', None)
@@ -109,47 +104,51 @@ def enhance_contrast(image: np.ndarray,
     logger.info(f"Applying {method} contrast enhancement")
     
     if method == 'clahe':
-        clip_limit = kwargs.get('clip_limit', 0.03)
-        tile_grid_size = kwargs.get('tile_grid_size', (8, 8))
+        clip_limit = kwargs.get('clip_limit', 2.0)
+        kernel_size = kwargs.get('kernel_size', (8, 8, 8))
         
         if image.ndim == 3:
-            # Apply CLAHE slice by slice for 3D data
-            result = np.zeros_like(image, dtype=np.float64)
-            for i in range(image.shape[0]):
-                result[i] = exposure.equalize_adapthist(
-                    image[i],
-                    clip_limit=clip_limit,
-                    nbins=256
-                )
-            # Convert back to original data type
-            return (result * 255).astype(image.dtype)
+            try:
+                import mclahe
+                # mclahe expects image to be in range [0, 1]
+                img_normalized = image.astype(np.float32)
+                img_normalized = (img_normalized - img_normalized.min()) / (img_normalized.max() - img_normalized.min())
+
+                return mclahe.mclahe(img_normalized, kernel_size=np.array(kernel_size), clip_limit=clip_limit)
+            except ImportError:
+                logger.warning("mclahe not found, falling back to slice-by-slice CLAHE")
+                result = np.zeros_like(image)
+                for i in range(image.shape[0]):
+                    result[i] = exposure.equalize_adapthist(
+                        image[i],
+                        clip_limit=clip_limit,
+                        nbins=256
+                    )
+                return result
         else:
-            result = exposure.equalize_adapthist(
+            return exposure.equalize_adapthist(
                 image,
                 clip_limit=clip_limit,
                 nbins=256
             )
-            return (result * 255).astype(image.dtype)
     
     elif method == 'histogram_eq':
         if image.ndim == 3:
-            result = np.zeros_like(image, dtype=np.float64)
+            result = np.zeros_like(image)
             for i in range(image.shape[0]):
                 result[i] = exposure.equalize_hist(image[i])
-            return (result * 255).astype(image.dtype)
+            return result
         else:
-            result = exposure.equalize_hist(image)
-            return (result * 255).astype(image.dtype)
+            return exposure.equalize_hist(image)
     
     elif method == 'adaptive_eq':
         if image.ndim == 3:
-            result = np.zeros_like(image, dtype=np.float64)
+            result = np.zeros_like(image)
             for i in range(image.shape[0]):
                 result[i] = exposure.equalize_adapthist(image[i])
-            return (result * 255).astype(image.dtype)
+            return result
         else:
-            result = exposure.equalize_adapthist(image)
-            return (result * 255).astype(image.dtype)
+            return exposure.equalize_adapthist(image)
     
     else:
         raise ValueError(f"Unknown contrast enhancement method: {method}")
@@ -374,9 +373,6 @@ def preprocess_fibsem_data(image: np.ndarray,
     logger.info(f"Starting preprocessing pipeline with steps: {steps}")
     
     for step in steps:
-        logger.info(f"Applying step: {step}")
-        logger.info(f"Image before step: dtype={result.dtype}, min={result.min()}, max={result.max()}")
-
         step_params = parameters.get(step, {})
         
         if step == 'noise_reduction':

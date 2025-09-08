@@ -11,13 +11,11 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union, List, Tuple
 import logging
 
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent))
-
-from core.config import FIBSEMConfig
-from core.data_io import load_fibsem_data, FIBSEMData
-from core.preprocessing import preprocess_fibsem_data
+from ..core.config import FIBSEMConfig
+from ..core.data_io import load_fibsem_data, FIBSEMData
+from ..core.preprocessing import preprocess_fibsem_data
+from ..core import segmentation
+from ..core import quantification
 
 logger = logging.getLogger(__name__)
 
@@ -177,24 +175,24 @@ class FIBSEMPipeline:
             config_params.update(kwargs)  # Override with provided parameters
             
             if method_type == 'traditional':
-                segmentation = self._segment_traditional(input_data, method, config_params)
+                segmentation_result = segmentation.segment_traditional(input_data, method, config_params)
             elif method_type == 'deep_learning':
-                segmentation = self._segment_deep_learning(input_data, method, config_params)
+                segmentation_result = segmentation.segment_deep_learning(input_data, method, config_params)
             else:
                 raise ValueError(f"Unknown method type: {method_type}")
             
             duration = time.time() - start_time
             
-            self.segmentation_result = segmentation
+            self.segmentation_result = segmentation_result
             
             result = {
                 'success': True,
-                'segmentation': segmentation,
+                'segmentation': segmentation_result,
                 'method': method,
                 'method_type': method_type,
                 'parameters': config_params,
                 'duration': duration,
-                'num_labels': len(np.unique(segmentation)) - 1  # Exclude background
+                'num_labels': len(np.unique(segmentation_result)) - 1  # Exclude background
             }
             
             self.processing_history.append({
@@ -219,6 +217,7 @@ class FIBSEMPipeline:
                 'duration': time.time() - start_time
             }
     
+feature/roi-loading
     def _segment_traditional(self, data: np.ndarray, method: str, params: Dict[str, Any]) -> np.ndarray:
         """Apply traditional segmentation method."""
         if method == 'watershed':
@@ -451,93 +450,37 @@ class FIBSEMPipeline:
         return final_labels
     
     def quantify_morphology(self, min_size: int = 10, **kwargs) -> Dict[str, Any]:
+=======
+    def quantify_morphology(self, **kwargs) -> Dict[str, Any]:
+main
         """
         Quantify morphological properties of segmented objects.
         
-        Args:
-            min_size: Minimum object size (in pixels/voxels) to analyze.
-
         Returns:
-            Dictionary with morphological analysis results.
+            Dictionary with morphological analysis results
         """
         if self.segmentation_result is None:
             return {'success': False, 'error': 'No segmentation available'}
         
         start_time = time.time()
         
-        try:
-            logger.info(f"Quantifying morphological properties (min_size={min_size})")
-            
-            from skimage import measure
-            
-            # Get region properties
-            props = measure.regionprops(self.segmentation_result)
-            
-            object_properties = []
-            
-            for prop in props:
-                if prop.area >= min_size:
-                    prop_dict = {
-                        'label': prop.label,
-                        'num_voxels': prop.area,
-                        'centroid': prop.centroid,
-                        'bounding_box': prop.bbox,
-                        'equivalent_diameter': prop.equivalent_diameter,
-                    }
-                    
-                    # 3D-specific properties
-                    if self.segmentation_result.ndim == 3:
-                        voxel_volume = np.prod(self.voxel_spacing)
-                        prop_dict['volume_nm3'] = prop.area * voxel_volume
+        result = quantification.quantify_morphology(
+            self.segmentation_result,
+            self.voxel_spacing,
+            **kwargs
+        )
 
-                        # Surface area and sphericity (can be computationally expensive)
-                        try:
-                            # Extract the object mask
-                            obj_mask = self.segmentation_result == prop.label
+        duration = time.time() - start_time
+        result['duration'] = duration
 
-                            # Marching cubes to get surface mesh
-                            verts, faces, _, _ = measure.marching_cubes(obj_mask, spacing=self.voxel_spacing)
-                            surface_area = measure.mesh_surface_area(verts, faces)
-                            prop_dict['surface_area_nm2'] = surface_area
-
-                            # Sphericity calculation
-                            # Sphericity = (pi^(1/3) * (6 * Volume)^(2/3)) / SurfaceArea
-                            if surface_area > 0:
-                                volume = prop_dict['volume_nm3']
-                                sphericity = (np.pi**(1/3) * (6 * volume)**(2/3)) / surface_area
-                                prop_dict['sphericity'] = sphericity
-
-                        except (RuntimeError, ValueError) as e:
-                            logger.warning(f"Could not calculate surface area for label {prop.label}: {e}")
-
-                    object_properties.append(prop_dict)
-            
-            duration = time.time() - start_time
-            
-            result = {
-                'success': True,
-                'num_objects': len(object_properties),
-                'object_properties': object_properties,
-                'duration': duration
-            }
-            
+        if result['success']:
             self.processing_history.append({
                 'step': 'quantify_morphology',
                 'duration': duration,
-                'parameters': {'min_size': min_size},
-                'result': {'num_objects': len(object_properties)}
+                'result': {'num_objects': result['morphological_analysis']['num_objects']}
             })
-            
-            logger.info(f"Morphological quantification completed: {len(object_properties)} objects, duration {duration:.2f}s")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in morphological quantification: {e}")
-            return {
-                'success': False,
-                'error': str(e),
-                'duration': time.time() - start_time
-            }
+
+        return result
     
     def quantify_particles(self, min_size: int = 50, **kwargs) -> Dict[str, Any]:
         """
@@ -554,50 +497,24 @@ class FIBSEMPipeline:
         
         start_time = time.time()
         
-        try:
-            logger.info(f"Quantifying particles (min_size={min_size})")
-            
-            from skimage import measure
-            
-            props = measure.regionprops(self.segmentation_result)
-            
-            particles = []
-            for prop in props:
-                if prop.area >= min_size:
-                    particle_info = {
-                        'label': prop.label,
-                        'area': prop.area,
-                        'centroid': prop.centroid,
-                        'equivalent_diameter': prop.equivalent_diameter
-                    }
-                    particles.append(particle_info)
-            
-            duration = time.time() - start_time
-            
-            result = {
-                'success': True,
-                'num_particles': len(particles),
-                'particle_properties': particles,
-                'duration': duration
-            }
-            
+        result = quantification.quantify_particles(
+            self.segmentation_result,
+            min_size,
+            **kwargs
+        )
+
+        duration = time.time() - start_time
+        result['duration'] = duration
+
+        if result['success']:
             self.processing_history.append({
                 'step': 'quantify_particles',
                 'duration': duration,
                 'parameters': {'min_size': min_size},
-                'result': {'num_particles': len(particles)}
+                'result': {'num_particles': result['num_particles']}
             })
-            
-            logger.info(f"Particle quantification completed: {len(particles)} particles, duration {duration:.2f}s")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in particle quantification: {e}")
-            return {
-                'success': False,
-                'error': str(e),
-                'duration': time.time() - start_time
-            }
+
+        return result
     
     def run_complete_pipeline(self, data_path: Union[str, Path],
                               segmentation_method: str = 'watershed',

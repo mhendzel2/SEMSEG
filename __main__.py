@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--test", action="store_true", help="Run a basic installation test")
     parser.add_argument("--gui", action="store_true", help="Launch desktop GUI file picker (Tkinter)")
     parser.add_argument("--web", action="store_true", help="Launch web UI (Streamlit)")
-    parser.add_argument("--run", type=str, metavar="PATH", help="Run pipeline on a data file (.tif/.h5/.npy)")
+    parser.add_argument("--run", type=str, metavar="PATH", help="Run pipeline on a data file (.tif/.h5/.npy) or remote Zarr (s3://.../.zarr or oo:dataset)")
     parser.add_argument("--method", type=str, default="watershed", help="Segmentation method (watershed|thresholding|morphology)")
     parser.add_argument("--type", dest="seg_type", type=str, default="traditional", help="Segmentation type (traditional|deep_learning)")
     parser.add_argument("--config", type=str, default=None, help="Optional config file path (json|yaml)")

@@ -15,36 +15,56 @@ import json
 import time
 import tempfile
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, TYPE_CHECKING
 
 import io
 import numpy as np
 import streamlit as st  # type: ignore
 
 # Optional dependencies
+CloudVolume: Any | None = None
 try:
-    from cloudvolume import CloudVolume  # type: ignore
+    from cloudvolume import CloudVolume as _CloudVolume  # type: ignore
+    CloudVolume = _CloudVolume
     _HAS_CLOUDVOLUME = True
 except Exception:
     _HAS_CLOUDVOLUME = False
 
+tifffile: Any | None = None
 try:
-    import tifffile  # type: ignore
+    import tifffile as _tifffile  # type: ignore
+    tifffile = _tifffile
     _HAS_TIFFFILE = True
 except Exception:
     _HAS_TIFFFILE = False
 
+h5py: Any | None = None
 try:
-    import h5py  # type: ignore
+    import h5py as _h5py  # type: ignore
+    h5py = _h5py
     _HAS_H5PY = True
 except Exception:
     _HAS_H5PY = False
 
+label2rgb: Any | None = None
 try:
-    from skimage.color import label2rgb  # type: ignore
+    from skimage.color import label2rgb as _label2rgb  # type: ignore
+    label2rgb = _label2rgb
     _HAS_SKIMAGE = True
 except Exception:
     _HAS_SKIMAGE = False
+
+# Zarr/S3 support
+zarr: Any | None = None
+fsspec: Any | None = None
+try:
+    import zarr as _zarr  # type: ignore
+    import fsspec as _fsspec  # type: ignore
+    zarr = _zarr
+    fsspec = _fsspec
+    _HAS_ZARR = True
+except Exception:
+    _HAS_ZARR = False
 
 # Support running as a package module or as a standalone script
 try:
@@ -114,8 +134,8 @@ def _load_preview_any(path: Path, axis: str, index: int) -> Optional[np.ndarray]
         if ext == ".npy":
             arr = np.load(path, mmap_mode="r")
             return _preview_slice(arr, axis, index)
-        if ext in (".tif", ".tiff") and _HAS_TIFFFILE:
-            with tifffile.TiffFile(path) as tif:
+        if ext in (".tif", ".tiff") and _HAS_TIFFFILE and tifffile is not None:
+            with tifffile.TiffFile(path) as tif:  # type: ignore[union-attr]
                 shp = tif.series[0].shape
                 if len(shp) == 3:
                     # z,y,x -> read page index along first dim
@@ -123,13 +143,13 @@ def _load_preview_any(path: Path, axis: str, index: int) -> Optional[np.ndarray]
                     return tif.pages[index].asarray()
                 else:
                     return tif.asarray()
-        if ext in (".h5", ".hdf5") and _HAS_H5PY:
-            with h5py.File(path, "r") as f:
+        if ext in (".h5", ".hdf5") and _HAS_H5PY and h5py is not None:
+            with h5py.File(path, "r") as f:  # type: ignore[union-attr]
                 # choose the first dataset
                 keys = list(f.keys())
                 if not keys:
                     return None
-                dset = f[keys[0]]
+                dset: Any = f[keys[0]]
                 shp = dset.shape
                 if len(shp) == 3:
                     if axis == "z":
@@ -153,8 +173,8 @@ def _extract_roi_local(path: Path, z0: int, y0: int, x0: int, dz: int, dy: int, 
             arr = np.load(path, mmap_mode="r")
             z1, y1, x1 = z0+dz, y0+dy, x0+dx
             return arr[z0:z1, y0:y1, x0:x1]
-        if ext in (".tif", ".tiff") and _HAS_TIFFFILE:
-            with tifffile.TiffFile(path) as tif:
+        if ext in (".tif", ".tiff") and _HAS_TIFFFILE and tifffile is not None:
+            with tifffile.TiffFile(path) as tif:  # type: ignore[union-attr]
                 shp = tif.series[0].shape
                 if len(shp) != 3:
                     return None
@@ -166,12 +186,12 @@ def _extract_roi_local(path: Path, z0: int, y0: int, x0: int, dz: int, dy: int, 
                 if slices:
                     return np.stack(slices, axis=0)
                 return None
-        if ext in (".h5", ".hdf5") and _HAS_H5PY:
-            with h5py.File(path, "r") as f:
+        if ext in (".h5", ".hdf5") and _HAS_H5PY and h5py is not None:
+            with h5py.File(path, "r") as f:  # type: ignore[union-attr]
                 keys = list(f.keys())
                 if not keys:
                     return None
-                dset = f[keys[0]]
+                dset: Any = f[keys[0]]
                 return dset[z0:z0+dz, y0:y0+dy, x0:x0+dx]
         return None
     except Exception:
@@ -181,16 +201,53 @@ def _openorganelle_fetch(url: str, z0: int, y0: int, x0: int, dz: int, dy: int, 
     if not _HAS_CLOUDVOLUME:
         raise RuntimeError("cloudvolume is not installed. Install with: pip install cloud-volume")
     # Hint type checkers and guard runtime
-    vol = CloudVolume(url, mip=mip, progress=False, fill_missing=True)  # type: ignore[name-defined]
+    vol: Any = CloudVolume(url, mip=mip, progress=False, fill_missing=True)  # type: ignore[arg-type]
     # CloudVolume expects slices in zyx order with stop-exclusive indices
     z1, y1, x1 = z0 + dz, y0 + dy, x0 + dx
-    sub = vol[z0:z1, y0:y1, x0:x1]
+    sub = vol[z0:z1, y0:y1, x0:x1]  # type: ignore[index]
     # Ensure numpy array, shape (z,y,x)
     arr = np.asarray(sub)
     if arr.ndim == 4:
         # Drop channels if present
         arr = arr[..., 0]
     return arr
+
+def _zarr_fetch(url: str, z0: int, y0: int, x0: int, dz: int, dy: int, dx: int, scale_key: str | None = None) -> np.ndarray:
+    if not _HAS_ZARR:
+        raise RuntimeError("zarr/fsspec not installed. Install with: pip install zarr fsspec s3fs")
+    # Mapper supports s3://, gs://, http(s) via fsspec
+    # Use anonymous access for public OpenOrganelle/COSEM buckets
+    mapper = fsspec.get_mapper(url, anon=True)  # type: ignore[union-attr]
+    root: Any = zarr.open(mapper, mode='r')  # type: ignore[union-attr]
+    arr = None
+    if hasattr(root, 'shape'):
+        arr = root  # type: ignore[assignment]
+    else:
+        g = root  # type: ignore[assignment]
+        # Try common multiscale keys
+        if scale_key and scale_key in g:
+            arr = g[scale_key]
+        elif '0' in g:
+            arr = g['0']
+        elif 's0' in g:
+            arr = g['s0']
+        else:
+            # Pick first 3D array
+            for k, v in g.items():
+                try:
+                    if hasattr(v, 'shape') and len(v.shape) >= 3:  # type: ignore[attr-defined]
+                        arr = v
+                        break
+                except Exception:
+                    continue
+    if arr is None:
+        raise RuntimeError("No array found in Zarr store")
+    z1, y1, x1 = z0 + dz, y0 + dy, x0 + dx
+    sub = arr[z0:z1, y0:y1, x0:x1]
+    a = np.asarray(sub)
+    if a.ndim == 4:
+        a = a[..., 0]
+    return a
 
 # Data tab
 with tabs[0]:
@@ -248,6 +305,20 @@ with tabs[1]:
                     st.image(_preview_slice(arr, axis, int(idx)), clamp=True, caption="ROI preview")
             except Exception as e:
                 st.error(f"Fetch failed: {e}")
+        if st.button("Fetch ROI from Zarr S3"):
+            try:
+                if not url or not (url.startswith('s3://') and url.endswith('.zarr')):
+                    st.error("Provide an s3://... .zarr URL in Data tab.")
+                else:
+                    arr = _zarr_fetch(url, int(z0), int(y0), int(x0), int(dz), int(dy), int(dx))
+                    tmp = Path(tempfile.gettempdir()) / f"semseg_roi_{int(time.time())}.npy"
+                    np.save(tmp, arr)
+                    ss["roi_file"] = str(tmp)
+                    ss["preview_slice"] = {"axis": axis, "index": int(idx)}
+                    st.success(f"ROI saved: {tmp} shape={arr.shape}")
+                    st.image(_preview_slice(arr, axis, int(idx)), clamp=True, caption="ROI preview")
+            except Exception as e:
+                st.error(f"Zarr fetch failed: {e}")
     with c2:
         if st.button("Preview local/selected file"):
             path = ss.get("roi_file") or ss.get("input_path")
@@ -263,7 +334,8 @@ with tabs[1]:
     st.divider()
     # Queue ROI for batch processing
     if st.button("Add ROI to Queue"):
-        roi = {"z0": int(z0), "y0": int(y0), "x0": int(x0), "dz": int(dz), "dy": int(dy), "dx": int(dx), "mip": int(mip), "url": url}
+        fmt = 'zarr' if (url and url.endswith('.zarr')) else 'precomputed'
+        roi = {"z0": int(z0), "y0": int(y0), "x0": int(x0), "dz": int(dz), "dy": int(dy), "dx": int(dx), "mip": int(mip), "url": url, "format": fmt}
         ss["roi_queue"].append(roi)
         st.success(f"Queued ROI #{len(ss['roi_queue'])}")
     if ss["roi_queue"]:
@@ -326,12 +398,18 @@ with tabs[3]:
             try:
                 # Prefer remote fetch if URL provided, else crop from selected file
                 if roi.get("url"):
-                    arr = _openorganelle_fetch(roi["url"], roi["z0"], roi["y0"], roi["x0"], roi["dz"], roi["dy"], roi["dx"], roi["mip"])
+                    if roi.get("format") == 'zarr':
+                        arr = _zarr_fetch(roi["url"], roi["z0"], roi["y0"], roi["x0"], roi["dz"], roi["dy"], roi["dx"])
+                    else:
+                        arr = _openorganelle_fetch(roi["url"], roi["z0"], roi["y0"], roi["x0"], roi["dz"], roi["dy"], roi["dx"], roi["mip"])
                 else:
-                    base = Path(ss.get("input_path")) if ss.get("input_path") else None
+                    base_str = str(ss.get("input_path") or "")
+                    base = Path(base_str) if base_str else None
                     if not base or not base.exists():
                         raise RuntimeError("No base file for local ROI.")
                     arr = _extract_roi_local(base, roi["z0"], roi["y0"], roi["x0"], roi["dz"], roi["dy"], roi["dx"])
+                if arr is None:
+                    raise RuntimeError("ROI extraction returned empty array")
                 tmp = Path(tempfile.gettempdir()) / f"semseg_batch_{i}_{int(time.time())}.npy"
                 np.save(tmp, arr)
                 p = create_default_pipeline()
@@ -368,7 +446,7 @@ with tabs[4]:
             # Load preview of source to overlay
             img = _load_preview_any(Path(src_path), axis, int(idx))
             if img is not None:
-                if _HAS_SKIMAGE:
+                if _HAS_SKIMAGE and label2rgb is not None:
                     # Ensure labels and normalize background
                     try:
                         if seg.ndim == 3:

@@ -8,10 +8,22 @@ in various formats including TIFF stacks, HDF5 files, and raw binary data.
 import numpy as np
 import os
 from pathlib import Path
-from typing import Union, Tuple, Optional, Dict, Any, List
+from typing import Union, Tuple, Optional, Dict, Any, List, cast
 import logging
-import zarr
-import s3fs
+
+# Optional remote IO deps
+zarr: Any = None  # type: ignore[assignment]
+s3fs: Any = None  # type: ignore[assignment]
+try:  # pragma: no cover - optional
+    import zarr as _zarr  # type: ignore
+    zarr = _zarr
+except Exception:  # pragma: no cover - optional
+    pass
+try:  # pragma: no cover - optional
+    import s3fs as _s3fs  # type: ignore
+    s3fs = _s3fs
+except Exception:  # pragma: no cover - optional
+    pass
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -57,7 +69,7 @@ def load_fibsem_data(file_path: Union[str, Path],
                      resolution_level: Optional[int] = -1,
                      voxel_size: Optional[Tuple[float, float, float]] = None,
                      raw_shape: Optional[Tuple[int, int, int]] = None,
-                     raw_dtype: Union[str, np.dtype] = np.uint8) -> Union[FIBSEMData, zarr.Group]:
+                     raw_dtype: Union[str, np.dtype] = np.dtype("uint8")) -> Union[FIBSEMData, Any]:
     """
     Load FIB-SEM data from various file formats, including remote OME-Zarr.
 
@@ -73,14 +85,18 @@ def load_fibsem_data(file_path: Union[str, Path],
     Returns:
         FIBSEMData object, or a Zarr group if resolution_level is None.
     """
+    data: Any = None
+
+    # OpenOrganelle shorthand (oo:dataset_id)
     if isinstance(file_path, str) and file_path.startswith("oo:"):
         dataset_id = file_path.split(":")[1]
         s3_path = f"s3://open-organelle/{dataset_id}/{dataset_id}.zarr"
         logger.info(f"Loading remote FIB-SEM data from {s3_path}")
-
-        s3 = s3fs.S3FileSystem(anon=True)
-        store = s3fs.S3Map(root=s3_path, s3=s3, check=False)
-        zarr_group = zarr.open(store, mode='r')
+        if s3fs is None or zarr is None:
+            raise ImportError("zarr/s3fs required to read OpenOrganelle Zarr. Install with: pip install zarr s3fs")
+        s3 = s3fs.S3FileSystem(anon=True)  # type: ignore[union-attr]
+        store = s3fs.S3Map(root=s3_path, s3=s3, check=False)  # type: ignore[union-attr]
+        zarr_group = zarr.open(store, mode='r')  # type: ignore[union-attr]
 
         if resolution_level is None:
             return zarr_group
@@ -89,22 +105,53 @@ def load_fibsem_data(file_path: Union[str, Path],
         if not multiscales:
             raise ValueError("Multiscale metadata not found in Zarr store.")
 
-        multiscale_meta = multiscales[0]
-        datasets = multiscale_meta['datasets']
-
-        if resolution_level < 0:
-            level_index = len(datasets) + resolution_level
-        else:
-            level_index = resolution_level
-
+        datasets = multiscales[0]['datasets']
+        level_index = (len(datasets) + resolution_level) if (resolution_level < 0) else resolution_level
         dataset_meta = datasets[level_index]
         data_path = dataset_meta['path']
-        data = zarr_group[data_path][:]
+        data = cast(Any, zarr_group[data_path])[:]
 
         # Get voxel size from metadata
         transform = dataset_meta['coordinateTransformations'][0]
         if transform['type'] == 'scale':
             voxel_size = tuple(transform['scale'])
+
+    # Direct S3 OME-Zarr URL (e.g., s3://janelia-cosem-datasets/.../.zarr)
+    elif isinstance(file_path, str) and file_path.startswith("s3://") and file_path.endswith(".zarr"):
+        if s3fs is None or zarr is None:
+            raise ImportError("zarr/s3fs required to read S3 Zarr. Install with: pip install zarr s3fs")
+        s3 = s3fs.S3FileSystem(anon=True)  # type: ignore[union-attr]
+        store = s3fs.S3Map(root=file_path, s3=s3, check=False)  # type: ignore[union-attr]
+        zarr_group = zarr.open(store, mode='r')  # type: ignore[union-attr]
+
+        if resolution_level is None:
+            return zarr_group
+
+        multiscales = zarr_group.attrs.get('multiscales')
+        if multiscales:
+            datasets = multiscales[0]['datasets']
+            level_index = (len(datasets) + resolution_level) if (resolution_level < 0) else resolution_level
+            dataset_meta = datasets[level_index]
+            data_path = dataset_meta['path']
+            data = cast(Any, zarr_group[data_path])[:]
+
+            # Voxel size (scale) if present
+            transform = dataset_meta.get('coordinateTransformations', [{}])[0]
+            if transform.get('type') == 'scale':
+                voxel_size = tuple(transform.get('scale', voxel_size or (1.0, 1.0, 1.0)))  # type: ignore[assignment]
+        else:
+            # No multiscales, assume root array or first child like '0'/'s0'
+            try:
+                data = cast(Any, zarr_group)[:]
+            except Exception:
+                found = False
+                for k in ('0', 's0'):
+                    if k in zarr_group:
+                        data = cast(Any, zarr_group[k])[:]
+                        found = True
+                        break
+                if not found:
+                    raise ValueError("No data array found in Zarr store")
 
     else:
         file_path = Path(file_path)
@@ -123,9 +170,11 @@ def load_fibsem_data(file_path: Union[str, Path],
         else:
             try:
                 data = np.load(file_path)
-            except:
+            except Exception:
                 raise ValueError(f"Unsupported file format: {file_path.suffix}")
 
+    if data is None:
+        raise ValueError("Failed to load data from provided path")
     if data.ndim == 2:
         data = data[np.newaxis, :, :]
     elif data.ndim != 3:
@@ -174,12 +223,12 @@ def _load_hdf5(file_path: Path) -> np.ndarray:
             
             for name in dataset_names:
                 if name in f:
-                    return f[name][:]
+                    return cast(Any, f[name])[:]
             
             # If no common names found, use the first dataset
             keys = list(f.keys())
             if keys:
-                return f[keys[0]][:]
+                return cast(Any, f[keys[0]])[:]
             else:
                 raise ValueError("No datasets found in HDF5 file")
                 
@@ -192,7 +241,7 @@ def _load_numpy(file_path: Path) -> np.ndarray:
 
 def _load_raw_binary(file_path: Path,
                        shape: Optional[Tuple[int, int, int]] = None,
-                       dtype: Union[str, np.dtype] = np.uint8) -> np.ndarray:
+                       dtype: Union[str, np.dtype] = np.dtype("uint8")) -> np.ndarray:
     """Load raw binary data."""
     if shape is None:
         raise ValueError("Shape must be provided for raw binary files")
@@ -350,8 +399,8 @@ def get_file_info(file_path: Union[str, Path]) -> Dict[str, Any]:
                     keys = list(f.keys())
                     if keys:
                         dset = f[keys[0]]
-                        info['shape'] = dset.shape
-                        info['dtype'] = dset.dtype
+                        info['shape'] = cast(Any, dset).shape
+                        info['dtype'] = cast(Any, dset).dtype
             except ImportError:
                 pass
                 

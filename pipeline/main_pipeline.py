@@ -227,6 +227,8 @@ class FIBSEMPipeline:
             return self._threshold_segmentation(data, params)
         elif method == 'morphology':
             return self._morphological_segmentation(data, params)
+        elif method == 'active_contour':
+            return self._active_contour_segmentation(data, params)
         else:
             raise ValueError(f"Unknown traditional method: {method}")
     
@@ -394,6 +396,59 @@ class FIBSEMPipeline:
         labels = measure.label(processed)
         
         return labels
+
+    def _active_contour_segmentation(self, data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
+        """Perform segmentation using the active contour (snakes) model."""
+        from skimage import segmentation, filters, measure
+
+        # Active contour works on 2D images, so we process slice by slice
+        if data.ndim != 3:
+            raise ValueError("Active contour segmentation requires a 3D image stack for this pipeline.")
+
+        final_labels = np.zeros_like(data, dtype=np.int32)
+        label_counter = 1
+
+        # Get parameters
+        alpha = params.get('alpha', 0.015)
+        beta = params.get('beta', 10)
+        gamma = params.get('gamma', 0.001)
+        init_contour = params.get('initial_contour', None)
+
+        for i in range(data.shape[0]):
+            image_slice = data[i]
+
+            # If no initial contour is provided, create a default one
+            if init_contour is None:
+                s = np.linspace(0, 2*np.pi, 400)
+                r = image_slice.shape[0]/2 * 0.8 + image_slice.shape[0]/3 * np.sin(s)
+                c = image_slice.shape[1]/2 * 0.8 + image_slice.shape[1]/3 * np.cos(s)
+                init_contour_slice = np.array([r, c]).T
+            else:
+                # For now, we assume the same initial contour is used for all slices.
+                # A more advanced implementation could allow defining contours per slice.
+                init_contour_slice = init_contour
+
+
+            # Evolve the active contour
+            snake = segmentation.active_contour(
+                filters.gaussian(image_slice, 3, preserve_range=False),
+                init_contour_slice,
+                alpha=alpha, beta=beta, gamma=gamma
+            )
+
+            # Create a mask from the final contour
+            mask = measure.grid_points_in_poly(image_slice.shape, snake)
+
+            # Label the objects in the mask
+            slice_labels = measure.label(mask)
+
+            # Add to the final 3D labels, ensuring unique labels across slices
+            if np.any(slice_labels):
+                max_label = slice_labels.max()
+                final_labels[i, :, :] = slice_labels + label_counter
+                label_counter += max_label
+
+        return final_labels
     
     def quantify_morphology(self, min_size: int = 10, **kwargs) -> Dict[str, Any]:
         """

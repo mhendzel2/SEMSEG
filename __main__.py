@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import subprocess
 import sys
 from pathlib import Path
 
@@ -54,18 +55,17 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if args.web:
+        app_path = Path(__file__).with_name("webui.py")
+        if not app_path.exists():
+            print("Web UI app not found.")
+            return 1
+        # Prefer invoking the Streamlit CLI for compatibility across versions
+        cmd = [sys.executable, "-m", "streamlit", "run", "-q", str(app_path)]
         try:
-            # Attempt to launch the Streamlit app programmatically
-            from streamlit.web import bootstrap  # type: ignore
-            app_path = Path(__file__).with_name("webui.py")
-            if not app_path.exists():
-                print("Web UI app not found.")
-                return 1
-            bootstrap.run(str(app_path), args=[], flag_options={})
-            return 0
-        except ModuleNotFoundError:
+            return subprocess.call(cmd)
+        except FileNotFoundError:
             print("Streamlit is not installed. Install with: pip install streamlit")
-            print("Then run: streamlit run -q \"" + str(Path(__file__).with_name("webui.py")) + "\"")
+            print("Then run: streamlit run -q \"" + str(app_path) + "\"")
             return 1
         except Exception as e:
             print(f"Failed to launch web UI: {e}")

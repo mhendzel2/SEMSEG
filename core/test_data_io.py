@@ -1,67 +1,114 @@
 import unittest
 from unittest import mock
-import tempfile
-import shutil
-from pathlib import Path
 import numpy as np
 import zarr
+from pathlib import Path
 
-from .data_io import download_openorganelle_data, load_fibsem_data
+from .data_io import load_fibsem_data, load_subvolume, FIBSEMData
 
-class TestDataIO(unittest.TestCase):
+def create_mock_ome_zarr_group():
+    """Creates an in-memory Zarr group simulating a multiscale OME-Zarr dataset."""
+    store = zarr.storage.MemoryStore()
+    root = zarr.group(store=store)
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
+    # Create multiscale metadata
+    root.attrs['multiscales'] = [
+        {
+            "version": "0.4",
+            "axes": [
+                {"name": "z", "type": "space"},
+                {"name": "y", "type": "space"},
+                {"name": "x", "type": "space"}
+            ],
+            "datasets": [
+                {
+                    "path": "s0",
+                    "coordinateTransformations": [{"type": "scale", "scale": [1.0, 1.0, 1.0]}]
+                },
+                {
+                    "path": "s1",
+                    "coordinateTransformations": [{"type": "scale", "scale": [2.0, 2.0, 2.0]}]
+                },
+                {
+                    "path": "s2",
+                    "coordinateTransformations": [{"type": "scale", "scale": [4.0, 4.0, 4.0]}]
+                }
+            ]
+        }
+    ]
 
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+    # Create data arrays for each resolution
+    root.create_array("s0", data=np.zeros((100, 100, 100), dtype=np.uint8)) # High-res
+    root.create_array("s1", data=np.zeros((50, 50, 50), dtype=np.uint8))   # Mid-res
+    root.create_array("s2", data=np.zeros((25, 25, 25), dtype=np.uint8))   # Low-res
+
+    return root
+
+class TestRemoteDataIO(unittest.TestCase):
 
     @mock.patch('core.data_io.s3fs.S3FileSystem')
-    def test_download_openorganelle_data(self, mock_s3fs):
-        """Test downloading data from OpenOrganelle.org with mocking."""
+    @mock.patch('core.data_io.zarr.open')
+    def test_load_fibsem_data_remote(self, mock_zarr_open, mock_s3fs):
+        """Test loading data from a remote OpenOrganelle Zarr store."""
+        mock_zarr_group = create_mock_ome_zarr_group()
+        mock_zarr_open.return_value = mock_zarr_group
 
-        # Configure the mock
-        mock_s3_instance = mock_s3fs.return_value
+        dataset_id = "oo:jrc_hela-2"
 
-        def create_dummy_zarr(s3_path, local_path, recursive):
-            # Simulate the download by creating a dummy zarr store
-            zarr_path = Path(local_path)
-            zarr.save_array(str(zarr_path), np.zeros((10, 10)))
-
-        mock_s3_instance.get.side_effect = create_dummy_zarr
-
-        dataset_name = "test_dataset"
-        zarr_path = download_openorganelle_data(dataset_name, cache_dir=self.test_dir)
-
-        # Check that the path is correct and exists
-        self.assertTrue(zarr_path.exists())
-        self.assertEqual(zarr_path.name, f"{dataset_name}.zarr")
-
-        # Check if it's a valid zarr store
-        data = zarr.open(str(zarr_path), mode='r')
-        self.assertIsInstance(data, zarr.Array)
-        self.assertEqual(data.shape, (10, 10))
-
-    @mock.patch('core.data_io.download_openorganelle_data')
-    def test_load_data_openorganelle(self, mock_download):
-        """Test loading data using the 'oo:' prefix with mocking."""
-
-        dataset_name = "test_dataset"
-        dummy_zarr_path = Path(self.test_dir) / f"{dataset_name}.zarr"
-        zarr.save_array(str(dummy_zarr_path), np.arange(100).reshape(10, 10))
-
-        mock_download.return_value = dummy_zarr_path
-
-        dataset_id = f"oo:{dataset_name}"
+        # 1. Test loading lowest resolution by default
         fibsem_data = load_fibsem_data(dataset_id)
+        self.assertIsInstance(fibsem_data, FIBSEMData)
+        self.assertEqual(fibsem_data.data.shape, (25, 25, 25)) # s2 shape
 
-        # Check that download was called
-        mock_download.assert_called_once_with(dataset_name)
+        # 2. Test loading a specific resolution (highest)
+        fibsem_data_s0 = load_fibsem_data(dataset_id, resolution_level=0)
+        self.assertEqual(fibsem_data_s0.data.shape, (100, 100, 100)) # s0 shape
 
-        # Check the loaded data
-        self.assertIsInstance(fibsem_data.data, np.ndarray)
-        self.assertEqual(fibsem_data.data.shape, (1, 10, 10))
-        np.testing.assert_array_equal(fibsem_data.data, np.arange(100).reshape(1, 10, 10))
+        # 3. Test returning the Zarr group itself
+        zarr_group = load_fibsem_data(dataset_id, resolution_level=None)
+        self.assertIsInstance(zarr_group, zarr.Group)
+        self.assertIn('s0', zarr_group)
+        self.assertIn('s1', zarr_group)
+        self.assertIn('s2', zarr_group)
+
+    @mock.patch('core.data_io.s3fs.S3FileSystem')
+    @mock.patch('core.data_io.zarr.open')
+    @mock.patch('zarr.core.array.Array.__getitem__')
+    def test_load_subvolume(self, mock_array_getitem, mock_zarr_open, mock_s3fs):
+        """Test loading a sub-volume from a remote dataset."""
+        mock_zarr_group = create_mock_ome_zarr_group()
+        mock_zarr_open.return_value = mock_zarr_group
+
+        # Make the mocked __getitem__ return a correctly shaped array
+        mock_array_getitem.return_value = np.zeros((20, 20, 20))
+
+        dataset_id = "oo:jrc_hela-2"
+        # ROI on the lowest resolution (s2, shape 25x25x25)
+        roi_slices = (slice(10, 15), slice(10, 15), slice(10, 15))
+
+        # Load subvolume from this ROI
+        subvolume_data = load_subvolume(
+            dataset_path=dataset_id,
+            roi_slices=roi_slices,
+            preview_resolution_level=-1 # s2
+        )
+
+        # Verify that zarr.open was called to get the group
+        mock_zarr_open.assert_called_once()
+
+        # Verify the slicing on the high-resolution array (s0)
+        # Scale factor from s2 to s0 is 4.0/1.0 = 4
+        expected_slice = (
+            slice(10 * 4, 15 * 4), # 40:60
+            slice(10 * 4, 15 * 4), # 40:60
+            slice(10 * 4, 15 * 4)  # 40:60
+        )
+
+        # Check that the array was sliced with the correct scaled coordinates
+        mock_array_getitem.assert_called_once_with(expected_slice)
+
+        # Check the shape of the returned data
+        self.assertEqual(subvolume_data.data.shape, (20, 20, 20))
 
 if __name__ == '__main__':
     unittest.main()

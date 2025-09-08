@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.widgets import RectangleSelector
 import numpy as np
 import threading
 import os
@@ -19,7 +20,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from core.config import FIBSEMConfig
-from core.data_io import load_fibsem_data, get_file_info, FIBSEMData
+from core.data_io import load_fibsem_data, get_file_info, FIBSEMData, load_subvolume
 from pipeline.main_pipeline import FIBSEMPipeline
 
 
@@ -37,6 +38,8 @@ class FIBSEMGUIApp:
         self.current_data = None
         self.segmentation_result = None
         self.current_slice_index = 0
+        self.roi_selection = {}
+        self.rect_selector = None
         
         # Setup the GUI
         self.setup_gui()
@@ -131,8 +134,30 @@ class FIBSEMGUIApp:
         self.voxel_x_var = tk.StringVar(value="5.0")
         ttk.Entry(voxel_frame, textvariable=self.voxel_x_var, width=10).grid(row=0, column=5, padx=5)
         
-        # Load data button
-        ttk.Button(data_frame, text="Load Data", command=self.load_data).pack(pady=10)
+        # ROI Selection Section
+        roi_section = ttk.LabelFrame(data_frame, text="Region of Interest (ROI) Selection", padding=10)
+        roi_section.pack(fill=tk.X, padx=10, pady=5)
+
+        roi_frame = ttk.Frame(roi_section)
+        roi_frame.pack(fill=tk.X)
+
+        # Z-axis selection
+        ttk.Label(roi_frame, text="Z-slice range:").grid(row=0, column=0, padx=5, sticky=tk.W)
+        self.roi_z_start_var = tk.StringVar(value="0")
+        ttk.Entry(roi_frame, textvariable=self.roi_z_start_var, width=8).grid(row=0, column=1, padx=2)
+        ttk.Label(roi_frame, text="to").grid(row=0, column=2)
+        self.roi_z_end_var = tk.StringVar(value="0")
+        ttk.Entry(roi_frame, textvariable=self.roi_z_end_var, width=8).grid(row=0, column=3, padx=2)
+
+        # X/Y range display (updated by RectangleSelector)
+        self.roi_xy_var = tk.StringVar(value="X/Y range: (not selected)")
+        ttk.Label(roi_frame, textvariable=self.roi_xy_var).grid(row=1, column=0, columnspan=4, padx=5, pady=5, sticky=tk.W)
+
+        # Load buttons
+        load_buttons_frame = ttk.Frame(data_frame)
+        load_buttons_frame.pack(pady=10)
+        ttk.Button(load_buttons_frame, text="Load Low-Res Preview", command=self.load_data).pack(side=tk.LEFT, padx=5)
+        ttk.Button(load_buttons_frame, text="Load High-Res ROI", command=self.load_roi).pack(side=tk.LEFT, padx=5)
     
     def setup_segmentation_tab(self):
         """Setup the segmentation tab."""
@@ -240,6 +265,17 @@ class FIBSEMGUIApp:
         # Navigation toolbar
         viz_toolbar = NavigationToolbar2Tk(self.viz_canvas, viz_frame)
         viz_toolbar.update()
+
+        # Add RectangleSelector for ROI
+        self.rect_selector = RectangleSelector(
+            self.viz_axes[0], self.on_roi_select,
+            useblit=True,
+            button=[1],  # Left mouse button
+            minspanx=5, minspany=5,
+            spancoords='pixels',
+            interactive=True
+        )
+        self.rect_selector.set_active(False)
     
     def setup_results_tab(self):
         """Setup the results and analysis tab."""
@@ -387,6 +423,11 @@ class FIBSEMGUIApp:
             self.slice_var.set(0)
             self.slice_label.config(text="0/0")
         
+        # Update ROI selection widgets
+        self.roi_z_start_var.set("0")
+        self.roi_z_end_var.set(str(max_slice))
+        self.rect_selector.set_active(True)
+
         # Update visualization
         self.update_visualization()
         
@@ -397,6 +438,54 @@ class FIBSEMGUIApp:
         self.progress_bar.stop()
         self.status_var.set("Ready")
         messagebox.showerror("Error", f"Failed to load data: {error_msg}")
+
+    def load_roi(self):
+        """Load the selected high-resolution Region of Interest."""
+        oo_id = self.oo_id_var.get()
+        if not oo_id:
+            messagebox.showerror("Error", "ROI loading only works with OpenOrganelle datasets.")
+            return
+
+        if 'x' not in self.roi_selection or 'y' not in self.roi_selection:
+            messagebox.showerror("Error", "Please select an X/Y region in the visualization tab first.")
+            return
+
+        try:
+            z_start = int(self.roi_z_start_var.get())
+            z_end = int(self.roi_z_end_var.get())
+
+            # Create slice objects
+            roi_slices = (
+                slice(z_start, z_end),
+                slice(self.roi_selection['y'][0], self.roi_selection['y'][1]),
+                slice(self.roi_selection['x'][0], self.roi_selection['x'][1])
+            )
+
+            self.status_var.set("Loading high-resolution ROI...")
+            self.progress_bar.start()
+
+            def load_roi_thread():
+                try:
+                    # Assume the preview is the lowest resolution (-1)
+                    subvolume = load_subvolume(
+                        dataset_path=f"oo:{oo_id}",
+                        roi_slices=roi_slices,
+                        preview_resolution_level=-1
+                    )
+
+                    # Replace current data with the new subvolume
+                    self.current_data = subvolume
+                    self.root.after(0, self.on_data_loaded)
+
+                except Exception as e:
+                    self.root.after(0, lambda: self.on_load_error(f"Failed to load ROI: {str(e)}"))
+
+            threading.Thread(target=load_roi_thread, daemon=True).start()
+
+        except ValueError:
+            messagebox.showerror("Error", "Invalid Z-slice range. Please enter valid numbers.")
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
     
     def on_method_type_change(self, event=None):
         """Handle method type selection change."""
@@ -612,6 +701,17 @@ class FIBSEMGUIApp:
         max_slice = self.current_data.shape[0] - 1 if len(self.current_data.shape) == 3 else 0
         self.slice_label.config(text=f"{slice_idx}/{max_slice}")
         self.update_visualization()
+
+    def on_roi_select(self, eclick, erelease):
+        """Callback for the RectangleSelector."""
+        x1, y1 = int(eclick.xdata), int(eclick.ydata)
+        x2, y2 = int(erelease.xdata), int(erelease.ydata)
+
+        self.roi_selection['x'] = sorted((x1, x2))
+        self.roi_selection['y'] = sorted((y1, y2))
+
+        # Update the label in the data tab
+        self.roi_xy_var.set(f"X range: {self.roi_selection['x'][0]}-{self.roi_selection['x'][1]}, Y range: {self.roi_selection['y'][0]}-{self.roi_selection['y'][1]}")
     
     def run_morphological_analysis(self):
         """Run morphological analysis on segmentation results."""

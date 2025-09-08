@@ -61,6 +61,11 @@ class FIBSEMConfig:
                         'threshold_rel': 0.6,
                         'watershed_line': True
                     },
+                    'active_contour': {
+                        'alpha': 0.015,
+                        'beta': 10,
+                        'gamma': 0.001
+                    },
                     'morphology': {
                         'operation': 'opening',
                         'structuring_element': 'ball',

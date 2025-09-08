@@ -217,7 +217,242 @@ class FIBSEMPipeline:
                 'duration': time.time() - start_time
             }
     
+feature/roi-loading
+    def _segment_traditional(self, data: np.ndarray, method: str, params: Dict[str, Any]) -> np.ndarray:
+        """Apply traditional segmentation method."""
+        if method == 'watershed':
+            return self._watershed_segmentation(data, params)
+        elif method == 'thresholding':
+            return self._threshold_segmentation(data, params)
+        elif method == 'morphology':
+            return self._morphological_segmentation(data, params)
+        elif method == 'active_contour':
+            return self._active_contour_segmentation(data, params)
+        else:
+            raise ValueError(f"Unknown traditional method: {method}")
+    
+    def _segment_deep_learning(self, data: np.ndarray, method: str, params: Dict[str, Any]) -> np.ndarray:
+        """Apply deep learning segmentation method."""
+        from core.unet import unet_model, predict_slices
+        from skimage import measure
+
+        logger.info(f"Applying deep learning method: {method}")
+
+        # In a real application, you would load a pre-trained model
+        # For this demo, we'll create a new model.
+        # The model architecture could be chosen based on the 'method' parameter.
+
+        input_size = (params.get("input_height", 256), params.get("input_width", 256), 1)
+        num_classes = params.get("num_classes", 2) # Assume binary: background + foreground
+
+        model = unet_model(input_size=input_size, num_classes=num_classes)
+
+        # Here you would typically load weights, e.g., model.load_weights('path/to/model.h5')
+        logger.warning("No pre-trained model weights loaded. Using randomly initialized U-Net.")
+
+        # Predict slice by slice
+        predictions = predict_slices(model, data)
+
+        # Convert probabilities to labels
+        # For multi-class, this would be argmax
+        if num_classes > 1:
+            labeled_image = np.argmax(predictions, axis=-1)
+        else:
+            # For binary, threshold the single output channel
+            threshold = params.get("threshold", 0.5)
+            labeled_image = (predictions > threshold).astype(np.uint8)
+
+        # Post-process to get instance labels if needed
+        # This uses connected components on the semantic segmentation
+        instance_labels = measure.label(labeled_image)
+
+        return instance_labels
+    
+    def _watershed_segmentation(self, data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
+        """Perform watershed segmentation."""
+        from scipy import ndimage
+        from skimage import segmentation, filters
+        try:
+            from skimage.feature import peak_local_maxima
+        except ImportError:
+            # Fallback for older scikit-image versions
+            def peak_local_maxima(image, min_distance=1, threshold_abs=None, **kwargs):
+                from skimage.morphology import local_maxima
+                from skimage.measure import label, regionprops
+                
+                # Find local maxima
+                maxima = local_maxima(image)
+                
+                if threshold_abs is not None:
+                    maxima = maxima & (image >= threshold_abs)
+                
+                # Label and get centroids
+                labeled_maxima = label(maxima)
+                props = regionprops(labeled_maxima)
+                
+                # Return coordinates
+                coords = [tuple(map(int, prop.centroid)) for prop in props]
+                return coords
+        
+        # Get parameters
+        min_distance = params.get('min_distance', 20)
+        threshold_rel = params.get('threshold_rel', 0.6)
+        
+        # Convert to binary if needed
+        if data.dtype != bool:
+            threshold = filters.threshold_otsu(data)
+            binary = data > threshold
+        else:
+            binary = data
+        
+        # Compute distance transform
+        distance = ndimage.distance_transform_edt(binary)
+        
+        # Find local maxima as markers
+        if data.ndim == 3:
+            # For 3D data, find maxima in each slice
+            markers = np.zeros_like(distance, dtype=np.int32)
+            label_counter = 1
+            
+            for i in range(distance.shape[0]):
+                slice_distance = distance[i]
+                if slice_distance.max() > 0:
+                    local_maxima = peak_local_maxima(
+                        slice_distance,
+                        min_distance=min_distance,
+                        threshold_abs=threshold_rel * slice_distance.max()
+                    )
+                    
+                    for coord in local_maxima:
+                        markers[i, coord[0], coord[1]] = label_counter
+                        label_counter += 1
+        else:
+            # For 2D data
+            local_maxima = peak_local_maxima(
+                distance,
+                min_distance=min_distance,
+                threshold_abs=threshold_rel * distance.max()
+            )
+            
+            markers = np.zeros_like(distance, dtype=np.int32)
+            for idx, coord in enumerate(local_maxima):
+                markers[coord[0], coord[1]] = idx + 1
+        
+        # Apply watershed
+        labels = segmentation.watershed(-distance, markers, mask=binary)
+        
+        return labels
+    
+    def _threshold_segmentation(self, data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
+        """Perform threshold-based segmentation."""
+        from skimage import filters, measure
+        
+        method = params.get('method', 'otsu')
+        
+        if method == 'otsu':
+            threshold = filters.threshold_otsu(data)
+        elif method == 'li':
+            threshold = filters.threshold_li(data)
+        elif method == 'yen':
+            threshold = filters.threshold_yen(data)
+        else:
+            threshold = filters.threshold_otsu(data)
+        
+        binary = data > threshold
+        labels = measure.label(binary)
+        
+        return labels
+    
+    def _morphological_segmentation(self, data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
+        """Perform morphology-based segmentation."""
+        from skimage import morphology, measure, filters
+        
+        # First threshold the data
+        threshold = filters.threshold_otsu(data)
+        binary = data > threshold
+        
+        # Apply morphological operations
+        operation = params.get('operation', 'opening')
+        radius = params.get('radius', 3)
+        
+        if data.ndim == 3:
+            selem = morphology.ball(radius)
+        else:
+            selem = morphology.disk(radius)
+        
+        if operation == 'opening':
+            processed = morphology.opening(binary, selem)
+        elif operation == 'closing':
+            processed = morphology.closing(binary, selem)
+        elif operation == 'erosion':
+            processed = morphology.erosion(binary, selem)
+        elif operation == 'dilation':
+            processed = morphology.dilation(binary, selem)
+        else:
+            processed = binary
+        
+        # Label connected components
+        labels = measure.label(processed)
+        
+        return labels
+
+    def _active_contour_segmentation(self, data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
+        """Perform segmentation using the active contour (snakes) model."""
+        from skimage import segmentation, filters, measure
+
+        # Active contour works on 2D images, so we process slice by slice
+        if data.ndim != 3:
+            raise ValueError("Active contour segmentation requires a 3D image stack for this pipeline.")
+
+        final_labels = np.zeros_like(data, dtype=np.int32)
+        label_counter = 1
+
+        # Get parameters
+        alpha = params.get('alpha', 0.015)
+        beta = params.get('beta', 10)
+        gamma = params.get('gamma', 0.001)
+        init_contour = params.get('initial_contour', None)
+
+        for i in range(data.shape[0]):
+            image_slice = data[i]
+
+            # If no initial contour is provided, create a default one
+            if init_contour is None:
+                s = np.linspace(0, 2*np.pi, 400)
+                r = image_slice.shape[0]/2 * 0.8 + image_slice.shape[0]/3 * np.sin(s)
+                c = image_slice.shape[1]/2 * 0.8 + image_slice.shape[1]/3 * np.cos(s)
+                init_contour_slice = np.array([r, c]).T
+            else:
+                # For now, we assume the same initial contour is used for all slices.
+                # A more advanced implementation could allow defining contours per slice.
+                init_contour_slice = init_contour
+
+
+            # Evolve the active contour
+            snake = segmentation.active_contour(
+                filters.gaussian(image_slice, 3, preserve_range=False),
+                init_contour_slice,
+                alpha=alpha, beta=beta, gamma=gamma
+            )
+
+            # Create a mask from the final contour
+            mask = measure.grid_points_in_poly(image_slice.shape, snake)
+
+            # Label the objects in the mask
+            slice_labels = measure.label(mask)
+
+            # Add to the final 3D labels, ensuring unique labels across slices
+            if np.any(slice_labels):
+                max_label = slice_labels.max()
+                final_labels[i, :, :] = slice_labels + label_counter
+                label_counter += max_label
+
+        return final_labels
+    
+    def quantify_morphology(self, min_size: int = 10, **kwargs) -> Dict[str, Any]:
+=======
     def quantify_morphology(self, **kwargs) -> Dict[str, Any]:
+main
         """
         Quantify morphological properties of segmented objects.
         

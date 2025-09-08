@@ -21,7 +21,7 @@ def remove_noise(image: np.ndarray,
     
     Args:
         image: Input image array
-        method: Noise removal method ('gaussian', 'bilateral', 'median', 'wiener')
+        method: Noise removal method ('gaussian', 'bilateral', 'median', 'wiener', 'nl_means')
         **kwargs: Method-specific parameters
         
     Returns:
@@ -33,6 +33,28 @@ def remove_noise(image: np.ndarray,
         sigma = kwargs.get('sigma', 1.0)
         return filters.gaussian(image, sigma=sigma, preserve_range=True)
     
+    elif method == 'nl_means':
+        # Recommended for high-quality denoising, can be slow
+        patch_size = kwargs.get('patch_size', 5)
+        patch_distance = kwargs.get('patch_distance', 6)
+        h = kwargs.get('h', 1.15 * np.std(image)) # h is a smoothing parameter
+
+        # denoise_nl_means expects float images
+        img_float = image.astype(np.float64)
+        img_float = (img_float - img_float.min()) / (img_float.max() - img_float.min())
+
+        denoised = restoration.denoise_nl_means(
+            img_float,
+            patch_size=patch_size,
+            patch_distance=patch_distance,
+            h=h,
+            preserve_range=True
+        )
+
+        # Convert back to original range and type
+        denoised = (denoised * (image.max() - image.min())) + image.min()
+        return denoised.astype(image.dtype)
+
     elif method == 'bilateral':
         sigma_color = kwargs.get('sigma_color', 0.1)
         sigma_spatial = kwargs.get('sigma_spatial', 1.0)

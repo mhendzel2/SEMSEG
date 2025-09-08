@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.widgets import RectangleSelector
+from matplotlib.widgets import RectangleSelector, PolygonSelector
 import numpy as np
 import threading
 import os
@@ -40,6 +40,8 @@ class FIBSEMGUIApp:
         self.current_slice_index = 0
         self.roi_selection = {}
         self.rect_selector = None
+        self.poly_selector = None
+        self.initial_contour = None
         
         # Setup the GUI
         self.setup_gui()
@@ -201,10 +203,19 @@ class FIBSEMGUIApp:
         self.params_notebook.add(preprocess_frame, text="Preprocessing")
         
         # Preprocessing options
+        # Noise reduction with method selection
+        noise_frame = ttk.Frame(preprocess_frame)
+        noise_frame.pack(anchor=tk.W, pady=2, fill=tk.X)
         self.noise_reduction_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(preprocess_frame, text="Noise Reduction", 
-                       variable=self.noise_reduction_var).pack(anchor=tk.W, pady=2)
+        ttk.Checkbutton(noise_frame, text="Noise Reduction",
+                       variable=self.noise_reduction_var).pack(side=tk.LEFT)
         
+        self.noise_method_var = tk.StringVar(value="nl_means")
+        noise_method_combo = ttk.Combobox(noise_frame, textvariable=self.noise_method_var,
+                                          values=['gaussian', 'bilateral', 'median', 'wiener', 'nl_means'],
+                                          state="readonly", width=15)
+        noise_method_combo.pack(side=tk.LEFT, padx=5)
+
         self.contrast_enhancement_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(preprocess_frame, text="Contrast Enhancement", 
                        variable=self.contrast_enhancement_var).pack(anchor=tk.W, pady=2)
@@ -225,8 +236,11 @@ class FIBSEMGUIApp:
         # Initialize method options and parameters
         self.on_method_type_change()
         
-        # Run segmentation button
-        ttk.Button(seg_frame, text="Run Segmentation", command=self.run_segmentation).pack(pady=10)
+        # Action buttons
+        action_frame = ttk.Frame(seg_frame)
+        action_frame.pack(pady=10)
+        ttk.Button(action_frame, text="Draw Initial Contour", command=self.draw_initial_contour).pack(side=tk.LEFT, padx=5)
+        ttk.Button(action_frame, text="Run Segmentation", command=self.run_segmentation).pack(side=tk.LEFT, padx=5)
     
     def setup_visualization_tab(self):
         """Setup the visualization tab."""
@@ -276,7 +290,36 @@ class FIBSEMGUIApp:
             interactive=True
         )
         self.rect_selector.set_active(False)
-    
+
+        # Add PolygonSelector for initial contour
+        self.poly_selector = PolygonSelector(
+            self.viz_axes[0], self.on_poly_select,
+            useblit=True
+        )
+        self.poly_selector.set_active(False)
+
+    def draw_initial_contour(self):
+        """Activate the PolygonSelector to draw an initial contour."""
+        if self.current_data is None:
+            messagebox.showerror("Error", "Please load data first.")
+            return
+
+        self.status_var.set("Draw a polygon on the left image to initialize the contour. Press 'Enter' to confirm.")
+        self.rect_selector.set_active(False) # Deactivate other selectors
+        self.poly_selector.set_active(True)
+
+    def on_poly_select(self, vertices):
+        """Callback for the PolygonSelector."""
+        self.initial_contour = vertices
+        self.poly_selector.set_active(False)
+        self.status_var.set(f"Initial contour defined with {len(vertices)} vertices. Ready to segment.")
+
+        # Optionally, draw the final polygon to confirm
+        self.update_visualization() # Redraw to clear selector artifacts
+        self.viz_axes[0].plot([v[0] for v in vertices] + [vertices[0][0]],
+                              [v[1] for v in vertices] + [vertices[0][1]], 'r-')
+        self.viz_canvas.draw()
+
     def setup_results_tab(self):
         """Setup the results and analysis tab."""
         results_frame = ttk.Frame(self.notebook)
@@ -492,7 +535,7 @@ class FIBSEMGUIApp:
         method_type = self.method_type_var.get()
         
         if method_type == "traditional":
-            methods = ["watershed", "thresholding", "morphology"]
+            methods = ["watershed", "thresholding", "morphology", "active_contour"]
         else:
             methods = ["multiresunet", "wnet3d"]
         
@@ -567,9 +610,17 @@ class FIBSEMGUIApp:
                 if self.artifact_removal_var.get():
                     preprocessing_steps.append('artifact_removal')
                 
+                # Construct parameters for preprocessing
+                preprocess_params = {}
+                if self.noise_reduction_var.get():
+                    preprocess_params['noise_reduction'] = {'method': self.noise_method_var.get()}
+
                 # Run preprocessing if any steps selected
                 if preprocessing_steps:
-                    preprocess_result = self.pipeline.preprocess_data(preprocessing_steps=preprocessing_steps)
+                    preprocess_result = self.pipeline.preprocess_data(
+                        preprocessing_steps=preprocessing_steps,
+                        parameters=preprocess_params
+                    )
                     if not preprocess_result['success']:
                         raise Exception(f"Preprocessing failed: {preprocess_result['error']}")
                 
@@ -596,6 +647,10 @@ class FIBSEMGUIApp:
                     except Exception:
                         pass  # Skip invalid parameters
                 
+                # Add initial contour to parameters if it exists
+                if method == 'active_contour' and self.initial_contour is not None:
+                    seg_params['initial_contour'] = self.initial_contour
+
                 # Run segmentation
                 result = self.pipeline.segment_data(method=method, method_type=method_type, **seg_params)
                 

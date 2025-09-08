@@ -14,6 +14,8 @@ import logging
 from ..core.config import FIBSEMConfig
 from ..core.data_io import load_fibsem_data, FIBSEMData
 from ..core.preprocessing import preprocess_fibsem_data
+from ..core import segmentation
+from ..core import quantification
 
 logger = logging.getLogger(__name__)
 
@@ -173,24 +175,24 @@ class FIBSEMPipeline:
             config_params.update(kwargs)  # Override with provided parameters
             
             if method_type == 'traditional':
-                segmentation = self._segment_traditional(input_data, method, config_params)
+                segmentation_result = segmentation.segment_traditional(input_data, method, config_params)
             elif method_type == 'deep_learning':
-                segmentation = self._segment_deep_learning(input_data, method, config_params)
+                segmentation_result = segmentation.segment_deep_learning(input_data, method, config_params)
             else:
                 raise ValueError(f"Unknown method type: {method_type}")
             
             duration = time.time() - start_time
             
-            self.segmentation_result = segmentation
+            self.segmentation_result = segmentation_result
             
             result = {
                 'success': True,
-                'segmentation': segmentation,
+                'segmentation': segmentation_result,
                 'method': method,
                 'method_type': method_type,
                 'parameters': config_params,
                 'duration': duration,
-                'num_labels': len(np.unique(segmentation)) - 1  # Exclude background
+                'num_labels': len(np.unique(segmentation_result)) - 1  # Exclude background
             }
             
             self.processing_history.append({
@@ -215,6 +217,7 @@ class FIBSEMPipeline:
                 'duration': time.time() - start_time
             }
     
+feature/roi-loading
     def _segment_traditional(self, data: np.ndarray, method: str, params: Dict[str, Any]) -> np.ndarray:
         """Apply traditional segmentation method."""
         if method == 'watershed':
@@ -223,14 +226,47 @@ class FIBSEMPipeline:
             return self._threshold_segmentation(data, params)
         elif method == 'morphology':
             return self._morphological_segmentation(data, params)
+        elif method == 'active_contour':
+            return self._active_contour_segmentation(data, params)
         else:
             raise ValueError(f"Unknown traditional method: {method}")
     
     def _segment_deep_learning(self, data: np.ndarray, method: str, params: Dict[str, Any]) -> np.ndarray:
         """Apply deep learning segmentation method."""
-        # This is a simplified implementation - real version would load trained models
-        logger.warning(f"Deep learning method {method} not fully implemented, using watershed fallback")
-        return self._watershed_segmentation(data, {})
+        from core.unet import unet_model, predict_slices
+        from skimage import measure
+
+        logger.info(f"Applying deep learning method: {method}")
+
+        # In a real application, you would load a pre-trained model
+        # For this demo, we'll create a new model.
+        # The model architecture could be chosen based on the 'method' parameter.
+
+        input_size = (params.get("input_height", 256), params.get("input_width", 256), 1)
+        num_classes = params.get("num_classes", 2) # Assume binary: background + foreground
+
+        model = unet_model(input_size=input_size, num_classes=num_classes)
+
+        # Here you would typically load weights, e.g., model.load_weights('path/to/model.h5')
+        logger.warning("No pre-trained model weights loaded. Using randomly initialized U-Net.")
+
+        # Predict slice by slice
+        predictions = predict_slices(model, data)
+
+        # Convert probabilities to labels
+        # For multi-class, this would be argmax
+        if num_classes > 1:
+            labeled_image = np.argmax(predictions, axis=-1)
+        else:
+            # For binary, threshold the single output channel
+            threshold = params.get("threshold", 0.5)
+            labeled_image = (predictions > threshold).astype(np.uint8)
+
+        # Post-process to get instance labels if needed
+        # This uses connected components on the semantic segmentation
+        instance_labels = measure.label(labeled_image)
+
+        return instance_labels
     
     def _watershed_segmentation(self, data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
         """Perform watershed segmentation."""
@@ -359,8 +395,64 @@ class FIBSEMPipeline:
         labels = measure.label(processed)
         
         return labels
+
+    def _active_contour_segmentation(self, data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
+        """Perform segmentation using the active contour (snakes) model."""
+        from skimage import segmentation, filters, measure
+
+        # Active contour works on 2D images, so we process slice by slice
+        if data.ndim != 3:
+            raise ValueError("Active contour segmentation requires a 3D image stack for this pipeline.")
+
+        final_labels = np.zeros_like(data, dtype=np.int32)
+        label_counter = 1
+
+        # Get parameters
+        alpha = params.get('alpha', 0.015)
+        beta = params.get('beta', 10)
+        gamma = params.get('gamma', 0.001)
+        init_contour = params.get('initial_contour', None)
+
+        for i in range(data.shape[0]):
+            image_slice = data[i]
+
+            # If no initial contour is provided, create a default one
+            if init_contour is None:
+                s = np.linspace(0, 2*np.pi, 400)
+                r = image_slice.shape[0]/2 * 0.8 + image_slice.shape[0]/3 * np.sin(s)
+                c = image_slice.shape[1]/2 * 0.8 + image_slice.shape[1]/3 * np.cos(s)
+                init_contour_slice = np.array([r, c]).T
+            else:
+                # For now, we assume the same initial contour is used for all slices.
+                # A more advanced implementation could allow defining contours per slice.
+                init_contour_slice = init_contour
+
+
+            # Evolve the active contour
+            snake = segmentation.active_contour(
+                filters.gaussian(image_slice, 3, preserve_range=False),
+                init_contour_slice,
+                alpha=alpha, beta=beta, gamma=gamma
+            )
+
+            # Create a mask from the final contour
+            mask = measure.grid_points_in_poly(image_slice.shape, snake)
+
+            # Label the objects in the mask
+            slice_labels = measure.label(mask)
+
+            # Add to the final 3D labels, ensuring unique labels across slices
+            if np.any(slice_labels):
+                max_label = slice_labels.max()
+                final_labels[i, :, :] = slice_labels + label_counter
+                label_counter += max_label
+
+        return final_labels
     
+    def quantify_morphology(self, min_size: int = 10, **kwargs) -> Dict[str, Any]:
+=======
     def quantify_morphology(self, **kwargs) -> Dict[str, Any]:
+main
         """
         Quantify morphological properties of segmented objects.
         
@@ -372,63 +464,23 @@ class FIBSEMPipeline:
         
         start_time = time.time()
         
-        try:
-            logger.info("Quantifying morphological properties")
-            
-            # This is a simplified implementation
-            from skimage import measure
-            
-            # Get region properties
-            props = measure.regionprops(self.segmentation_result)
-            
-            analyzed_labels = []
-            volumes = []
-            areas = []
-            
-            for prop in props:
-                if prop.area > kwargs.get('min_size', 10):
-                    analyzed_labels.append(prop.label)
-                    
-                    # Calculate volume (area * voxel volume for 2D, or actual volume for 3D)
-                    if self.segmentation_result.ndim == 3:
-                        voxel_volume = np.prod(self.voxel_spacing)
-                        volume = prop.area * voxel_volume  # area is actually volume in 3D
-                    else:
-                        voxel_area = self.voxel_spacing[1] * self.voxel_spacing[2]
-                        volume = prop.area * voxel_area
-                    
-                    volumes.append(volume)
-                    areas.append(prop.area)
-            
-            duration = time.time() - start_time
-            
-            result = {
-                'success': True,
-                'analyzed_labels': analyzed_labels,
-                'morphological_analysis': {
-                    'volumes': volumes,
-                    'areas': areas,
-                    'num_objects': len(analyzed_labels)
-                },
-                'duration': duration
-            }
-            
+        result = quantification.quantify_morphology(
+            self.segmentation_result,
+            self.voxel_spacing,
+            **kwargs
+        )
+
+        duration = time.time() - start_time
+        result['duration'] = duration
+
+        if result['success']:
             self.processing_history.append({
                 'step': 'quantify_morphology',
                 'duration': duration,
-                'result': {'num_objects': len(analyzed_labels)}
+                'result': {'num_objects': result['morphological_analysis']['num_objects']}
             })
-            
-            logger.info(f"Morphological quantification completed: {len(analyzed_labels)} objects, duration {duration:.2f}s")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in morphological quantification: {e}")
-            return {
-                'success': False,
-                'error': str(e),
-                'duration': time.time() - start_time
-            }
+
+        return result
     
     def quantify_particles(self, min_size: int = 50, **kwargs) -> Dict[str, Any]:
         """
@@ -445,50 +497,24 @@ class FIBSEMPipeline:
         
         start_time = time.time()
         
-        try:
-            logger.info(f"Quantifying particles (min_size={min_size})")
-            
-            from skimage import measure
-            
-            props = measure.regionprops(self.segmentation_result)
-            
-            particles = []
-            for prop in props:
-                if prop.area >= min_size:
-                    particle_info = {
-                        'label': prop.label,
-                        'area': prop.area,
-                        'centroid': prop.centroid,
-                        'equivalent_diameter': prop.equivalent_diameter
-                    }
-                    particles.append(particle_info)
-            
-            duration = time.time() - start_time
-            
-            result = {
-                'success': True,
-                'num_particles': len(particles),
-                'particle_properties': particles,
-                'duration': duration
-            }
-            
+        result = quantification.quantify_particles(
+            self.segmentation_result,
+            min_size,
+            **kwargs
+        )
+
+        duration = time.time() - start_time
+        result['duration'] = duration
+
+        if result['success']:
             self.processing_history.append({
                 'step': 'quantify_particles',
                 'duration': duration,
                 'parameters': {'min_size': min_size},
-                'result': {'num_particles': len(particles)}
+                'result': {'num_particles': result['num_particles']}
             })
-            
-            logger.info(f"Particle quantification completed: {len(particles)} particles, duration {duration:.2f}s")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in particle quantification: {e}")
-            return {
-                'success': False,
-                'error': str(e),
-                'duration': time.time() - start_time
-            }
+
+        return result
     
     def run_complete_pipeline(self, data_path: Union[str, Path],
                               segmentation_method: str = 'watershed',

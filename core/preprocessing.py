@@ -21,7 +21,7 @@ def remove_noise(image: np.ndarray,
     
     Args:
         image: Input image array
-        method: Noise removal method ('gaussian', 'bilateral', 'median', 'wiener')
+        method: Noise removal method ('gaussian', 'bilateral', 'median', 'wiener', 'nl_means')
         **kwargs: Method-specific parameters
         
     Returns:
@@ -33,6 +33,28 @@ def remove_noise(image: np.ndarray,
         sigma = kwargs.get('sigma', 1.0)
         return filters.gaussian(image, sigma=sigma, preserve_range=True)
     
+    elif method == 'nl_means':
+        # Recommended for high-quality denoising, can be slow
+        patch_size = kwargs.get('patch_size', 5)
+        patch_distance = kwargs.get('patch_distance', 6)
+        h = kwargs.get('h', 1.15 * np.std(image)) # h is a smoothing parameter
+
+        # denoise_nl_means expects float images
+        img_float = image.astype(np.float64)
+        img_float = (img_float - img_float.min()) / (img_float.max() - img_float.min())
+
+        denoised = restoration.denoise_nl_means(
+            img_float,
+            patch_size=patch_size,
+            patch_distance=patch_distance,
+            h=h,
+            preserve_range=True
+        )
+
+        # Convert back to original range and type
+        denoised = (denoised * (image.max() - image.min())) + image.min()
+        return denoised.astype(image.dtype)
+
     elif method == 'bilateral':
         sigma_color = kwargs.get('sigma_color', 0.1)
         sigma_spatial = kwargs.get('sigma_spatial', 1.0)
@@ -52,15 +74,11 @@ def remove_noise(image: np.ndarray,
         return denoised.astype(image.dtype)
     
     elif method == 'median':
-        disk_size = kwargs.get('disk_size', 3)
+        size = kwargs.get('size', 3)
         if image.ndim == 3:
-            # Apply median filter slice by slice for 3D data
-            result = np.zeros_like(image)
-            for i in range(image.shape[0]):
-                result[i] = filters.median(image[i], morphology.disk(disk_size))
-            return result
+            return ndimage.median_filter(image, size=size)
         else:
-            return filters.median(image, morphology.disk(disk_size))
+            return filters.median(image, morphology.disk(size))
     
     elif method == 'wiener':
         noise_variance = kwargs.get('noise_variance', None)
@@ -86,19 +104,27 @@ def enhance_contrast(image: np.ndarray,
     logger.info(f"Applying {method} contrast enhancement")
     
     if method == 'clahe':
-        clip_limit = kwargs.get('clip_limit', 0.03)
-        tile_grid_size = kwargs.get('tile_grid_size', (8, 8))
+        clip_limit = kwargs.get('clip_limit', 2.0)
+        kernel_size = kwargs.get('kernel_size', (8, 8, 8))
         
         if image.ndim == 3:
-            # Apply CLAHE slice by slice for 3D data
-            result = np.zeros_like(image)
-            for i in range(image.shape[0]):
-                result[i] = exposure.equalize_adapthist(
-                    image[i],
-                    clip_limit=clip_limit,
-                    nbins=256
-                )
-            return result
+            try:
+                import mclahe
+                # mclahe expects image to be in range [0, 1]
+                img_normalized = image.astype(np.float32)
+                img_normalized = (img_normalized - img_normalized.min()) / (img_normalized.max() - img_normalized.min())
+
+                return mclahe.mclahe(img_normalized, kernel_size=np.array(kernel_size), clip_limit=clip_limit)
+            except ImportError:
+                logger.warning("mclahe not found, falling back to slice-by-slice CLAHE")
+                result = np.zeros_like(image)
+                for i in range(image.shape[0]):
+                    result[i] = exposure.equalize_adapthist(
+                        image[i],
+                        clip_limit=clip_limit,
+                        nbins=256
+                    )
+                return result
         else:
             return exposure.equalize_adapthist(
                 image,

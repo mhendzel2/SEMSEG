@@ -70,6 +70,7 @@ def run_diagnostics():
         print("\n✓ All required packages available")
         return True
 
+
 def test_installation():
     """Test basic functionality."""
     print("Testing FIB-SEM Program Installation")

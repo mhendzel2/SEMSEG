@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from pathlib import Path
 
-from .pipeline.main_pipeline import create_default_pipeline
+from .pipeline import create_default_pipeline
 
 
 def _run_pipeline_async(root: tk.Tk, path: Path, status_var: tk.StringVar):

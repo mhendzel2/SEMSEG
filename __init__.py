@@ -15,7 +15,7 @@ __email__ = "support@manus.ai"
 
 # Import main components for easy access
 try:
-    from .pipeline.main_pipeline import FIBSEMPipeline, create_default_pipeline
+    from .pipeline import FIBSEMPipeline, create_default_pipeline
     from .core.config import FIBSEMConfig
     from .core.data_io import load_fibsem_data
 except ImportError:

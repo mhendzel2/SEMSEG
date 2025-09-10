@@ -69,7 +69,8 @@ def load_fibsem_data(file_path: Union[str, Path],
                      resolution_level: Optional[int] = -1,
                      voxel_size: Optional[Tuple[float, float, float]] = None,
                      raw_shape: Optional[Tuple[int, int, int]] = None,
-                     raw_dtype: Union[str, np.dtype] = np.dtype("uint8")) -> Union[FIBSEMData, Any]:
+                     raw_dtype: Union[str, np.dtype] = np.dtype("uint8"),
+                     dataset_key: Optional[str] = None) -> Union[FIBSEMData, Any]:
     """
     Load FIB-SEM data from various file formats, including remote OME-Zarr.
 
@@ -83,7 +84,7 @@ def load_fibsem_data(file_path: Union[str, Path],
         raw_dtype: Data type for raw binary files.
 
     Returns:
-        FIBSEMData object, or a Zarr group if resolution_level is None.
+    FIBSEMData object, or a Zarr/N5 group if resolution_level is None.
     """
     data: Any = None
 
@@ -116,42 +117,82 @@ def load_fibsem_data(file_path: Union[str, Path],
         if transform['type'] == 'scale':
             voxel_size = tuple(transform['scale'])
 
-    # Direct S3 OME-Zarr URL (e.g., s3://janelia-cosem-datasets/.../.zarr)
-    elif isinstance(file_path, str) and file_path.startswith("s3://") and file_path.endswith(".zarr"):
+    # Direct S3 OME-Zarr or N5 URL (e.g., s3://.../.zarr or .n5)
+    elif isinstance(file_path, str) and file_path.startswith("s3://") and (file_path.endswith(".zarr") or file_path.endswith(".n5")):
         if s3fs is None or zarr is None:
-            raise ImportError("zarr/s3fs required to read S3 Zarr. Install with: pip install zarr s3fs")
+            raise ImportError("zarr/s3fs required to read S3 Zarr/N5. Install with: pip install zarr s3fs")
         s3 = s3fs.S3FileSystem(anon=True)  # type: ignore[union-attr]
         store = s3fs.S3Map(root=file_path, s3=s3, check=False)  # type: ignore[union-attr]
         zarr_group = zarr.open(store, mode='r')  # type: ignore[union-attr]
 
         if resolution_level is None:
             return zarr_group
-
-        multiscales = zarr_group.attrs.get('multiscales')
-        if multiscales:
-            datasets = multiscales[0]['datasets']
-            level_index = (len(datasets) + resolution_level) if (resolution_level < 0) else resolution_level
-            dataset_meta = datasets[level_index]
-            data_path = dataset_meta['path']
-            data = cast(Any, zarr_group[data_path])[:]
-
-            # Voxel size (scale) if present
-            transform = dataset_meta.get('coordinateTransformations', [{}])[0]
-            if transform.get('type') == 'scale':
-                voxel_size = tuple(transform.get('scale', voxel_size or (1.0, 1.0, 1.0)))  # type: ignore[assignment]
-        else:
-            # No multiscales, assume root array or first child like '0'/'s0'
+        # If a dataset_key is explicitly given and exists, use it directly (may include scale like s0)
+        if dataset_key and dataset_key in zarr_group:
+            target = zarr_group[dataset_key]
+            # If dataset_key represents a group containing scales, attempt resolution selection
             try:
-                data = cast(Any, zarr_group)[:]
+                if hasattr(target, 'attrs') and not hasattr(target, 'shape'):
+                    # group with possible multiscales or scale arrays
+                    grp = target
+                else:
+                    grp = None
             except Exception:
-                found = False
-                for k in ('0', 's0'):
-                    if k in zarr_group:
-                        data = cast(Any, zarr_group[k])[:]
-                        found = True
-                        break
-                if not found:
-                    raise ValueError("No data array found in Zarr store")
+                grp = None
+            if grp is None and hasattr(target, 'shape'):
+                data = cast(Any, target)[:]
+            else:
+                # treat as group of scales (0,s0, s1,...)
+                candidates = []
+                for k in ('0','s0'):
+                    if k in target:
+                        candidates.append(k)
+                if not candidates and hasattr(target, 'keys'):
+                    # collect all keys that look like scales
+                    for k in target.keys():  # type: ignore[attr-defined]
+                        if k.startswith('s') or k.isdigit():
+                            candidates.append(k)
+                if not candidates:
+                    raise ValueError(f"No scale arrays found under dataset_key '{dataset_key}'")
+                # resolve level index (negative allowed)
+                level_index = resolution_level if (resolution_level is not None and resolution_level >= 0) else (len(candidates) + (resolution_level or -1))
+                level_index = max(0, min(level_index, len(candidates)-1))
+                data = cast(Any, target[candidates[level_index]])[:]
+        else:
+            multiscales = zarr_group.attrs.get('multiscales')
+            if multiscales:
+                datasets = multiscales[0]['datasets']
+                level_index = (len(datasets) + resolution_level) if (resolution_level < 0) else resolution_level
+                dataset_meta = datasets[level_index]
+                data_path = dataset_meta['path']
+                data = cast(Any, zarr_group[data_path])[:]
+                transform = dataset_meta.get('coordinateTransformations', [{}])[0]
+                if transform.get('type') == 'scale':
+                    voxel_size = tuple(transform.get('scale', voxel_size or (1.0, 1.0, 1.0)))  # type: ignore[assignment]
+            else:
+                # No multiscales, assume root array or first child like '0'/'s0'
+                try:
+                    data = cast(Any, zarr_group)[:]
+                except Exception:
+                    found = False
+                    for k in ('0', 's0'):
+                        if k in zarr_group:
+                            data = cast(Any, zarr_group[k])[:]
+                            found = True
+                            break
+                    if not found:
+                        # attempt to resolve dataset_key if provided but not direct child (nested path)
+                        if dataset_key:
+                            try:
+                                nested = zarr_group
+                                for part in dataset_key.strip('/').split('/'):
+                                    nested = nested[part]
+                                data = cast(Any, nested)[:]
+                                found = True
+                            except Exception:
+                                pass
+                        if not found:
+                            raise ValueError("No data array found in Zarr/N5 store")
 
     else:
         file_path = Path(file_path)

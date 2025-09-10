@@ -115,7 +115,7 @@ ss.setdefault("config_path", None)
 ss.setdefault("roi_queue", [])
 ss.setdefault("remote_url", "")
 
-tabs = st.tabs(["Data", "ROI", "Preprocess", "Segment", "Analyze", "3D Viewer", "Config"])
+tabs = st.tabs(["Data", "ROI", "Preprocess", "Segment", "Analyze", "3D Viewer", "Neuroglancer", "Config"])
 
 def _save_uploaded_file(buffer, name: str) -> Optional[Path]:
     if buffer is None:
@@ -333,10 +333,103 @@ def _plotly_isosurface(arr: np.ndarray, isovalue: float = 0.5, name: str = "isos
     fig.update_layout(title=name, scene_aspectmode='data', margin=dict(l=0, r=0, t=30, b=0))
     return fig
 
+def _parse_neuroglancer_url(state_url: str) -> Dict[str, Any]:
+    """Parse a Neuroglancer URL (hash JSON) extracting source URL, position, scale info.
+
+    Supports 'zarr://s3://bucket/path/.../dataset/' style sources.
+    Returns dict with keys: source_url, dataset_root, dataset_key, scale_transform, position (xyz), raw_json.
+    """
+    out: Dict[str, Any] = {}
+    try:
+        if '#!' not in state_url:
+            return {"error": "No state fragment found (#!)"}
+        frag = state_url.split('#!', 1)[1]
+        import urllib.parse, json as _json, re, ast
+        decoded = urllib.parse.unquote(frag)
+        js: Any = None
+        # First try strict JSON
+        try:
+            js = _json.loads(decoded)
+        except Exception:
+            # Fallback: handle single-quoted, underscore-delimited pseudo JSON
+            candidate = decoded.strip()
+            # 1. Replace occurrences of _' with ,'
+            candidate = re.sub(r"_(?=\'[^\']+\':)", ",", candidate)
+            # 2. Replace remaining lone underscores separating numbers or brackets with commas
+            candidate = re.sub(r"(?<=[0-9\]\}])_(?=[0-9\{\'\[])", ",", candidate)
+            # 3. Ensure keys wrapped in double quotes for valid JSON: convert 'key': to "key":
+            candidate = re.sub(r"'([^'\\]+)'(?=\s*:)", r'"\1"', candidate)
+            # 4. Convert single-quoted string values to double quotes (skip already changed keys)
+            candidate = re.sub(r":\s*'([^'\\]*)'", lambda m: ': "' + m.group(1).replace('"','\\"') + '"', candidate)
+            # 5. Replace True/False/None or true/false/null uniformly
+            candidate = re.sub(r"\btrue\b", "true", candidate, flags=re.IGNORECASE)
+            candidate = re.sub(r"\bfalse\b", "false", candidate, flags=re.IGNORECASE)
+            candidate = re.sub(r"\bnull\b", "null", candidate, flags=re.IGNORECASE)
+            # 6. Remove stray trailing commas before closing braces/brackets
+            candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+            # 7. Attempt JSON load
+            try:
+                js = _json.loads(candidate)
+            except Exception as fe:
+                out['error'] = f'Parse failed after fallback normalization: {fe}'
+                out['debug_snippet'] = candidate[:400]
+                return out
+        out['raw_json'] = js
+        layers = js.get('layers', [])
+        image_layer = None
+        for lyr in layers:
+            if lyr.get('type') == 'image':
+                image_layer = lyr
+                break
+        if not image_layer:
+            out['error'] = 'No image layer found'
+            return out
+        source = image_layer.get('source', {})
+        if isinstance(source, dict):
+            raw_source_url = source.get('url') or ''
+        else:
+            raw_source_url = str(source)
+        out['source_url'] = raw_source_url
+        # Neuroglancer zarr prefix may be 'zarr://'
+        if raw_source_url.startswith('zarr://'):
+            zarr_path = raw_source_url[len('zarr://'):]
+        else:
+            zarr_path = raw_source_url
+        out['zarr_full_path'] = zarr_path
+        # Attempt to split dataset root and dataset key (heuristic: find '/em/' or '/recon-' subpath)
+        # We'll keep entire path; ROI fetch uses full store path.
+        out['dataset_root'] = zarr_path  # full path for fsspec mapper
+        pos = js.get('position') or js.get('navigation', {}).get('pose', {}).get('position', {}).get('voxelCoordinates')
+        if pos and isinstance(pos, list) and len(pos) >= 3:
+            out['position'] = pos[:3]
+        else:
+            out['position'] = [0, 0, 0]
+        out['scale_transform'] = image_layer.get('transform') or {}
+    except Exception as e:
+        out['error'] = f'Parse failed: {e}'
+    return out
+
+def _fetch_neuroglancer_roi(parsed: Dict[str, Any], size_xyz: Tuple[int,int,int], center_override: Optional[Tuple[int,int,int]] = None, scale_key: Optional[str] = None) -> np.ndarray:
+    if 'zarr_full_path' not in parsed:
+        raise ValueError('Parsed state missing zarr_full_path')
+    center = center_override if center_override else tuple(int(c) for c in parsed.get('position', [0,0,0]))
+    # center given in x,y,z (Neuroglancer), convert to z,y,x
+    cx, cy, cz = center
+    sx, sy, sz = size_xyz
+    # Neuroglancer is xyz; we need zyx
+    z0 = max(int(cz - sz//2), 0)
+    y0 = max(int(cy - sy//2), 0)
+    x0 = max(int(cx - sx//2), 0)
+    dz, dy, dx = int(sz), int(sy), int(sx)
+    url = parsed['zarr_full_path']
+    # Ensure trailing slash removal for mapper compatibility
+    url = url.rstrip('/')
+    return _zarr_fetch(url, z0, y0, x0, dz, dy, dx, scale_key=scale_key)
+
 # Data tab
 with tabs[0]:
     st.subheader("Load Data")
-    source = st.radio("Source", ["Local file", "OpenOrganelle (precomputed)"])
+    source = st.radio("Source", ["Local file", "OpenOrganelle (precomputed)", "S3 Zarr/N5"], index=0)
     local_col, remote_col = st.columns(2)
     with local_col:
         up = st.file_uploader("Upload (.tif/.h5/.hdf5/.npy)", type=["tif", "tiff", "h5", "hdf5", "npy"])
@@ -383,6 +476,49 @@ with tabs[0]:
             except Exception as e:
                 st.error(f"Remote preview failed: {e}")
 
+    # Additional S3 Zarr/N5 browser when source selected
+    if source == "S3 Zarr/N5":
+        st.markdown("---")
+        st.subheader("S3 Zarr/N5 Browser")
+        if not _HAS_ZARR:
+            st.info("Install zarr + fsspec + s3fs: pip install zarr fsspec s3fs")
+        # Initialize defaults
+        s3_url: str = st.text_input(
+            "S3 Zarr/N5 root (e.g. s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.n5)",
+            value=str(ss.get("remote_url", ""))
+        )
+        list_keys = st.button("List datasets & scales")
+        dataset_key: str = st.text_input("Dataset key (e.g. em/fibsem-uint16)", value=str(ss.get("dataset_key", "")))
+        chosen_scale: str = st.text_input("Scale key (e.g. s0 or 0) leave blank for auto", value=str(ss.get("scale_key", "")))
+        if list_keys and _HAS_ZARR and s3_url.startswith('s3://') and (s3_url.endswith('.zarr') or s3_url.endswith('.n5')):
+            try:
+                import fsspec  # type: ignore
+                mapper = fsspec.get_mapper(s3_url, anon=True)  # type: ignore
+                root = zarr.open(mapper, mode='r')  # type: ignore
+                discovered: Dict[str, Any] = {"top_level_arrays": [], "groups": []}
+                if hasattr(root, 'shape'):
+                    discovered["top_level_arrays"].append({"key": "/", "shape": getattr(root, 'shape', None)})
+                else:
+                    for k, v in root.items():  # type: ignore[attr-defined]
+                        try:
+                            if hasattr(v, 'shape'):
+                                discovered["top_level_arrays"].append({"key": k, "shape": getattr(v, 'shape', None)})
+                            else:
+                                # inspect scale children
+                                scales = []
+                                for sk, sv in v.items():  # type: ignore[attr-defined]
+                                    if hasattr(sv, 'shape'):
+                                        scales.append({"scale": sk, "shape": getattr(sv, 'shape', None)})
+                                discovered["groups"].append({"group": k, "scales": scales})
+                        except Exception:
+                            continue
+                st.json(discovered)
+            except Exception as e:
+                st.error(f"Listing failed: {e}")
+        ss["remote_url"] = s3_url
+        ss["dataset_key"] = dataset_key
+        ss["scale_key"] = chosen_scale
+
 # ROI tab
 with tabs[1]:
     st.subheader("Region of Interest (ROI)")
@@ -414,12 +550,13 @@ with tabs[1]:
                     st.image(_preview_slice(arr, axis, int(idx)), clamp=True, caption="ROI preview")
             except Exception as e:
                 st.error(f"Fetch failed: {e}")
-        if st.button("Fetch ROI from Zarr S3"):
+        if st.button("Fetch ROI from Zarr/N5 S3"):
             try:
-                if not url or not (url.startswith('s3://') and url.endswith('.zarr')):
-                    st.error("Provide an s3://... .zarr URL in Data tab.")
+                if not url or not (url.startswith('s3://') and (url.endswith('.zarr') or url.endswith('.n5'))):
+                    st.error("Provide an s3://... (.zarr or .n5) URL in Data tab.")
                 else:
-                    arr = _zarr_fetch(url, int(z0), int(y0), int(x0), int(dz), int(dy), int(dx))
+                    scale_key = ss.get("scale_key") or None
+                    arr = _zarr_fetch(url, int(z0), int(y0), int(x0), int(dz), int(dy), int(dx), scale_key=scale_key if scale_key else None)
                     tmp = Path(tempfile.gettempdir()) / f"semseg_roi_{int(time.time())}.npy"
                     np.save(tmp, arr)
                     ss["roi_file"] = str(tmp)
@@ -427,7 +564,7 @@ with tabs[1]:
                     st.success(f"ROI saved: {tmp} shape={arr.shape}")
                     st.image(_preview_slice(arr, axis, int(idx)), clamp=True, caption="ROI preview")
             except Exception as e:
-                st.error(f"Zarr fetch failed: {e}")
+                st.error(f"Zarr/N5 fetch failed: {e}")
     with c2:
         if st.button("Preview local/selected file"):
             path = ss.get("roi_file") or ss.get("input_path")
@@ -641,8 +778,44 @@ with tabs[5]:
             except Exception as e:
                 st.error(f"Isosurface failed: {e}")
 
-# Config tab
-with tabs[5]:
+# Neuroglancer tab
+with tabs[6]:
+    st.subheader("Neuroglancer Integration")
+    st.caption("Paste a Neuroglancer URL, parse its state, and fetch an ROI for processing.")
+    ng_url = st.text_input("Neuroglancer URL")
+    parse_clicked = st.button("Parse Neuroglancer URL")
+    if parse_clicked and ng_url:
+        parsed = _parse_neuroglancer_url(ng_url)
+        if parsed.get('error'):
+            st.error(parsed['error'])
+        else:
+            st.session_state['ng_parsed'] = parsed
+            st.success('Parsed successfully')
+            st.json({k: parsed[k] for k in ('source_url','position') if k in parsed})
+    parsed = st.session_state.get('ng_parsed')
+    if parsed:
+        st.markdown("### ROI Selection")
+        st.write("Center (from Neuroglancer position, override if desired)")
+        cx = st.number_input("Center X", value=int(parsed.get('position',[0,0,0])[0]))
+        cy = st.number_input("Center Y", value=int(parsed.get('position',[0,0,0])[1]))
+        cz = st.number_input("Center Z", value=int(parsed.get('position',[0,0,0])[2]))
+        sx = st.number_input("Size X", value=512, min_value=8)
+        sy = st.number_input("Size Y", value=512, min_value=8)
+        sz = st.number_input("Size Z", value=64, min_value=1)
+        scale_key = st.text_input("Scale key (optional, e.g. s2)", value="")
+        if st.button("Fetch ROI from Neuroglancer state"):
+            try:
+                arr = _fetch_neuroglancer_roi(parsed, (sx, sy, sz), center_override=(cx, cy, cz), scale_key=scale_key or None)
+                tmp = Path(tempfile.gettempdir()) / f"semseg_ng_roi_{int(time.time())}.npy"
+                np.save(tmp, arr)
+                st.session_state['roi_file'] = str(tmp)
+                st.success(f"ROI saved: {tmp} shape={arr.shape}")
+                st.image(_preview_slice(arr, 'z', arr.shape[0]//2), clamp=True, caption="Central Z slice")
+            except Exception as e:
+                st.error(f"Neuroglancer ROI fetch failed: {e}")
+
+# Config tab (last)
+with tabs[7]:
     st.subheader("Configuration")
     st.caption("Advanced: edit configuration and apply when running the pipeline.")
     default_json = "{}"

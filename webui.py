@@ -353,27 +353,55 @@ def _parse_neuroglancer_url(state_url: str) -> Dict[str, Any]:
         except Exception:
             # Fallback: handle single-quoted, underscore-delimited pseudo JSON
             candidate = decoded.strip()
-            # 1. Replace occurrences of _' with ,'
             candidate = re.sub(r"_(?=\'[^\']+\':)", ",", candidate)
-            # 2. Replace remaining lone underscores separating numbers or brackets with commas
             candidate = re.sub(r"(?<=[0-9\]\}])_(?=[0-9\{\'\[])", ",", candidate)
-            # 3. Ensure keys wrapped in double quotes for valid JSON: convert 'key': to "key":
             candidate = re.sub(r"'([^'\\]+)'(?=\s*:)", r'"\1"', candidate)
-            # 4. Convert single-quoted string values to double quotes (skip already changed keys)
             candidate = re.sub(r":\s*'([^'\\]*)'", lambda m: ': "' + m.group(1).replace('"','\\"') + '"', candidate)
-            # 5. Replace True/False/None or true/false/null uniformly
             candidate = re.sub(r"\btrue\b", "true", candidate, flags=re.IGNORECASE)
             candidate = re.sub(r"\bfalse\b", "false", candidate, flags=re.IGNORECASE)
             candidate = re.sub(r"\bnull\b", "null", candidate, flags=re.IGNORECASE)
-            # 6. Remove stray trailing commas before closing braces/brackets
             candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
-            # 7. Attempt JSON load
             try:
                 js = _json.loads(candidate)
-            except Exception as fe:
-                out['error'] = f'Parse failed after fallback normalization: {fe}'
-                out['debug_snippet'] = candidate[:400]
-                return out
+            except Exception:
+                # Deep fallback: replace underscores outside string literals with commas
+                def deep_normalize(s: str) -> str:
+                    res = []
+                    in_str = False
+                    quote = ''
+                    esc = False
+                    for ch in s:
+                        if in_str:
+                            res.append(ch)
+                            if esc:
+                                esc = False
+                            elif ch == '\\':
+                                esc = True
+                            elif ch == quote:
+                                in_str = False
+                        else:
+                            if ch in ('"', "'"):
+                                in_str = True
+                                quote = ch
+                                res.append(ch)
+                            elif ch == '_':
+                                res.append(',')
+                            else:
+                                res.append(ch)
+                    return ''.join(res)
+                deep = deep_normalize(candidate)
+                deep = re.sub(r"'([^'\\]+)'(?=\s*:)", r'"\1"', deep)
+                deep = re.sub(r":\s*'([^'\\]*)'", lambda m: ': "' + m.group(1).replace('"','\\"') + '"', deep)
+                deep = re.sub(r"\btrue\b", "true", deep, flags=re.IGNORECASE)
+                deep = re.sub(r"\bfalse\b", "false", deep, flags=re.IGNORECASE)
+                deep = re.sub(r"\bnull\b", "null", deep, flags=re.IGNORECASE)
+                deep = re.sub(r",\s*([}\]])", r"\1", deep)
+                try:
+                    js = _json.loads(deep)
+                except Exception as fe2:
+                    out['error'] = f'Parse failed after deep fallback: {fe2}'
+                    out['debug_snippet'] = deep[:400]
+                    return out
         out['raw_json'] = js
         layers = js.get('layers', [])
         image_layer = None

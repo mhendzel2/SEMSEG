@@ -476,6 +476,27 @@ def _fetch_neuroglancer_roi(parsed: Dict[str, Any], size_xyz: Tuple[int,int,int]
     url = url.rstrip('/')
     return _zarr_fetch(url, z0, y0, x0, dz, dy, dx, scale_key=scale_key)
 
+def _build_ng_link(source_url: str, position_xyz: Tuple[int,int,int]) -> str:
+    try:
+        import json as _json, urllib.parse
+        state = {
+            "dimensions": {"x": [1e-9, "m"], "y": [1e-9, "m"], "z": [1e-9, "m"]},
+            "position": [int(position_xyz[0]), int(position_xyz[1]), int(position_xyz[2])],
+            "crossSectionScale": 50,
+            "layers": [
+                {
+                    "type": "image",
+                    "source": {"url": source_url},
+                    "name": "image"
+                }
+            ],
+            "layout": "4panel",
+        }
+        enc = urllib.parse.quote(_json.dumps(state, separators=(",", ":")))
+        return f"https://neuroglancer-demo.appspot.com/#!{enc}"
+    except Exception:
+        return ""
+
 # Data tab
 with tabs[0]:
     st.subheader("Load Data")
@@ -902,10 +923,20 @@ with tabs[6]:
             except Exception as e:
                 st.error(f"Add layer failed: {e}")
         # Layer listing and boxes
+        layer_info = None
         if st.button("List layers") and st.session_state.get('ng_viewer_started'):
             try:
                 viewer, _ = ngi.start_viewer()
-                st.json(ngi.list_layers(viewer))
+                layer_info = ngi.list_layers(viewer)
+                st.json(layer_info)
+                # Build selector for image layer source
+                names = [l.get('name') for l in layer_info.get('layers', [])]
+                sources = [l.get('source') for l in layer_info.get('layers', [])]
+                options = [f"{n} — {s}" for n,s in zip(names, sources)] if names else []
+                if options:
+                    sel = st.selectbox("Image layer to use", options, index=0)
+                    idx = options.index(sel)
+                    st.session_state['ng_selected_source'] = sources[idx]
             except Exception as e:
                 st.error(f"List failed: {e}")
         box_layer = st.text_input("Annotation layer name (optional)")
@@ -920,7 +951,7 @@ with tabs[6]:
                 (x2,y2,z2) = b['corner2']
                 x0, x1b = sorted([x1,x2]); y0, y1b = sorted([y1,y2]); z0, z1b = sorted([z1,z2])
                 dx = x1b - x0; dy = y1b - y0; dz = z1b - z0
-                src = ngi.get_first_image_layer_source(viewer)
+                src = st.session_state.get('ng_selected_source') or ngi.get_first_image_layer_source(viewer)
                 if not src:
                     raise RuntimeError("No image source detected.")
                 real_src = src[len('zarr://'):] if src.startswith('zarr://') else src
@@ -931,8 +962,30 @@ with tabs[6]:
                 np.save(tmp, arr)
                 st.session_state['roi_file'] = str(tmp)
                 st.success(f"ROI saved from box: {tmp} shape={arr.shape}")
+                link = _build_ng_link(src, (int((x0+x1b)/2), int((y0+y1b)/2), int((z0+z1b)/2)))
+                if link:
+                    st.write("Neuroglancer link for ROI center:")
+                    st.write(link)
             except Exception as e:
                 st.error(f"Box ROI failed: {e}")
+        if st.button("Queue all box annotations") and st.session_state.get('ng_viewer_started'):
+            try:
+                viewer, _ = ngi.start_viewer()
+                boxes = ngi.get_box_annotations(viewer, layer_name=box_layer or None)
+                if not boxes:
+                    raise RuntimeError("No box annotations found")
+                src = st.session_state.get('ng_selected_source') or ngi.get_first_image_layer_source(viewer)
+                if not src:
+                    raise RuntimeError("No image source detected.")
+                for b in boxes:
+                    (x1,y1,z1) = b['corner1']
+                    (x2,y2,z2) = b['corner2']
+                    x0, x1b = sorted([x1,x2]); y0, y1b = sorted([y1,y2]); z0, z1b = sorted([z1,z2])
+                    roi = {"z0": int(z0), "y0": int(y0), "x0": int(x0), "dz": int(z1b - z0), "dy": int(y1b - y0), "dx": int(x1b - x0), "url": src, "format": "zarr"}
+                    st.session_state["roi_queue"].append(roi)
+                st.success(f"Queued {len(boxes)} ROIs from annotations")
+            except Exception as e:
+                st.error(f"Queue failed: {e}")
         cap_col1, cap_col2 = st.columns(2)
         with cap_col1:
             if st.button("Capture Crosshair as ROI center") and st.session_state.get('ng_viewer_started'):

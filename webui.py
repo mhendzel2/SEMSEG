@@ -222,12 +222,17 @@ def _openorganelle_fetch(url: str, z0: int, y0: int, x0: int, dz: int, dy: int, 
         arr = arr[..., 0]
     return arr
 
-def _zarr_fetch(url: str, z0: int, y0: int, x0: int, dz: int, dy: int, dx: int, scale_key: str | None = None) -> np.ndarray:
+def _zarr_fetch(url: str, z0: int, y0: int, x0: int, dz: int, dy: int, dx: int, scale_key: str | None = None, cache: bool = False) -> np.ndarray:
     if not _HAS_ZARR:
         raise RuntimeError("zarr/fsspec not installed. Install with: pip install zarr fsspec s3fs")
     # Mapper supports s3://, gs://, http(s) via fsspec
     # Use anonymous access for public OpenOrganelle/COSEM buckets
-    mapper = fsspec.get_mapper(url, anon=True)  # type: ignore[union-attr]
+    storage_options = {"anon": True} if url.startswith(('s3://','gs://')) else {}
+    if cache:
+        # Simple on-disk cache wrapper
+        mapper = fsspec.get_mapper(f"simplecache::{url}", **storage_options, cache_storage=str(Path(tempfile.gettempdir())/"semseg_cache"))  # type: ignore[union-attr]
+    else:
+        mapper = fsspec.get_mapper(url, **storage_options)  # type: ignore[union-attr]
     root: Any = zarr.open(mapper, mode='r')  # type: ignore[union-attr]
     arr = None
     if hasattr(root, 'shape'):
@@ -251,7 +256,24 @@ def _zarr_fetch(url: str, z0: int, y0: int, x0: int, dz: int, dy: int, dx: int, 
                 except Exception:
                     continue
     if arr is None:
-        raise RuntimeError("No array found in Zarr store")
+        # Recursive descent search for first 3D array
+        def _find_array(node, depth=0, max_depth=4):  # type: ignore[no-untyped-def]
+            if depth > max_depth:
+                return None
+            try:
+                if hasattr(node, 'shape') and len(getattr(node, 'shape', ())) >= 3:  # type: ignore[attr-defined]
+                    return node
+                if hasattr(node, 'items'):
+                    for k, v in node.items():  # type: ignore[attr-defined]
+                        found = _find_array(v, depth+1, max_depth)
+                        if found is not None:
+                            return found
+            except Exception:
+                return None
+            return None
+        arr = _find_array(root)
+    if arr is None:
+        raise RuntimeError("No array found in Zarr store (searched recursively)")
     z1, y1, x1 = z0 + dz, y0 + dy, x0 + dx
     sub = arr[z0:z1, y0:y1, x0:x1]
     a = np.asarray(sub)
@@ -841,6 +863,114 @@ with tabs[6]:
                 st.image(_preview_slice(arr, 'z', arr.shape[0]//2), clamp=True, caption="Central Z slice")
             except Exception as e:
                 st.error(f"Neuroglancer ROI fetch failed: {e}")
+
+    st.markdown("---")
+    st.subheader("Live Neuroglancer (optional)")
+    try:
+        from . import neuroglancer_integration as ngi  # type: ignore
+    except Exception:
+        try:
+            import SEMSEG.neuroglancer_integration as ngi  # type: ignore
+        except Exception:
+            ngi = None  # type: ignore
+    if ngi is None:
+        st.info("Install python-neuroglancer to use the live viewer: pip install neuroglancer")
+    else:
+        if st.button("Start viewer server"):
+            try:
+                viewer, url = ngi.start_viewer()
+                st.session_state['ng_viewer_started'] = True
+                st.session_state['ng_viewer_url'] = url
+                st.success(f"Viewer started: {url}")
+            except Exception as e:
+                st.error(f"Failed to start viewer: {e}")
+        url = st.session_state.get('ng_viewer_url')
+        if url:
+            st.write("Viewer URL:", url)
+            try:
+                st.components.v1.iframe(url, height=600)  # type: ignore
+            except Exception:
+                st.write("Open in new tab:")
+                st.write(url)
+        add_src = st.text_input("Add remote layer source (e.g., precomputed://... or zarr://s3://...)")
+        if st.button("Add layer") and st.session_state.get('ng_viewer_started'):
+            try:
+                viewer, _ = ngi.start_viewer()
+                if add_src:
+                    ngi.add_remote_layer(viewer, "image", add_src)
+                    st.success("Layer added")
+            except Exception as e:
+                st.error(f"Add layer failed: {e}")
+        # Layer listing and boxes
+        if st.button("List layers") and st.session_state.get('ng_viewer_started'):
+            try:
+                viewer, _ = ngi.start_viewer()
+                st.json(ngi.list_layers(viewer))
+            except Exception as e:
+                st.error(f"List failed: {e}")
+        box_layer = st.text_input("Annotation layer name (optional)")
+        if st.button("Fetch ROI from first box") and st.session_state.get('ng_viewer_started'):
+            try:
+                viewer, _ = ngi.start_viewer()
+                boxes = ngi.get_box_annotations(viewer, layer_name=box_layer or None)
+                if not boxes:
+                    raise RuntimeError("No box annotations found")
+                b = boxes[0]
+                (x1,y1,z1) = b['corner1']
+                (x2,y2,z2) = b['corner2']
+                x0, x1b = sorted([x1,x2]); y0, y1b = sorted([y1,y2]); z0, z1b = sorted([z1,z2])
+                dx = x1b - x0; dy = y1b - y0; dz = z1b - z0
+                src = ngi.get_first_image_layer_source(viewer)
+                if not src:
+                    raise RuntimeError("No image source detected.")
+                real_src = src[len('zarr://'):] if src.startswith('zarr://') else src
+                # Optional cache toggle
+                use_cache = st.checkbox("Use on-disk cache for fetch", value=True)
+                arr = _zarr_fetch(str(real_src), int(z0), int(y0), int(x0), int(dz), int(dy), int(dx), cache=use_cache)
+                tmp = Path(tempfile.gettempdir()) / f"semseg_ng_roi_{int(time.time())}.npy"
+                np.save(tmp, arr)
+                st.session_state['roi_file'] = str(tmp)
+                st.success(f"ROI saved from box: {tmp} shape={arr.shape}")
+            except Exception as e:
+                st.error(f"Box ROI failed: {e}")
+        cap_col1, cap_col2 = st.columns(2)
+        with cap_col1:
+            if st.button("Capture Crosshair as ROI center") and st.session_state.get('ng_viewer_started'):
+                try:
+                    viewer, _ = ngi.start_viewer()
+                    cx, cy, cz = ngi.get_crosshair_position(viewer)
+                    st.success(f"Captured center (x,y,z)=({cx},{cy},{cz})")
+                    st.session_state['ng_center'] = (cx, cy, cz)
+                except Exception as e:
+                    st.error(f"Capture failed: {e}")
+        with cap_col2:
+            size_x = st.number_input("Capture Size X", value=512, min_value=8)
+            size_y = st.number_input("Capture Size Y", value=512, min_value=8)
+            size_z = st.number_input("Capture Size Z", value=64, min_value=1)
+            scale_key2 = st.text_input("Scale key (optional)", value="")
+            if st.button("Fetch ROI from captured center"):
+                try:
+                    center = st.session_state.get('ng_center')
+                    if not center:
+                        raise RuntimeError("No center captured. Click Capture Crosshair first.")
+                    # Try to infer current layer source from viewer, else fallback to parsed
+                    viewer, _ = ngi.start_viewer()
+                    src = ngi.get_first_image_layer_source(viewer) or parsed.get('zarr_full_path') if parsed else None
+                    if not src:
+                        raise RuntimeError("No image layer source detected. Add a layer or parse a URL.")
+                    # If the source uses zarr:// prefix, pass through; our _zarr_fetch supports s3:// and gs:// via fsspec
+                    real_src = src
+                    if real_src.startswith('zarr://'):
+                        real_src = real_src[len('zarr://'):]
+                    arr = _zarr_fetch(str(real_src), 0, 0, 0, 1, 1, 1, scale_key=scale_key2 or None)  # touch to validate
+                    # Now compute ROI fetch using our function
+                    arr = _fetch_neuroglancer_roi({'zarr_full_path': real_src, 'position': list(center)}, (int(size_x), int(size_y), int(size_z)), center_override=center, scale_key=scale_key2 or None)
+                    tmp = Path(tempfile.gettempdir()) / f"semseg_ng_roi_{int(time.time())}.npy"
+                    np.save(tmp, arr)
+                    st.session_state['roi_file'] = str(tmp)
+                    st.success(f"ROI saved: {tmp} shape={arr.shape}")
+                except Exception as e:
+                    st.error(f"Fetch failed: {e}")
 
 # Config tab (last)
 with tabs[7]:

@@ -62,6 +62,68 @@ morph_result = pipeline.quantify_morphology()
 See [SEGMENTATION_GUIDE.md](SEGMENTATION_GUIDE.md) for detailed usage instructions.
 ```
 
+See [SEGMENTATION_GUIDE.md](SEGMENTATION_GUIDE.md) for detailed usage instructions.
+
+## 🚀 Quick Start
+
+### 1. Install (First Time Only)
+```powershell
+# Create virtual environment and install
+python -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### 2. Run the Program
+
+**Choose your preferred method:**
+
+#### 🖥️ GUI Mode (Easiest)
+```powershell
+.\venv\Scripts\python.exe launch_gui.py
+```
+
+#### 🔧 Command Line
+```powershell
+# Run on your data
+.\venv\Scripts\python.exe -m __main__ --run "path\to\data.tif" --method region_growing
+
+# See all options
+.\venv\Scripts\python.exe -m __main__ --help
+```
+
+#### 🌐 Web Interface
+```powershell
+.\venv\Scripts\python.exe -m __main__ --web
+```
+
+#### 📝 Python Script
+```python
+import sys
+sys.path.insert(0, r'c:\Users\mjhen\Github\SEMSEG')
+
+from core.segmentation import segment_traditional
+from core.data_io import load_fibsem_data
+
+# Load your data
+data = load_fibsem_data('your_data.tif')
+
+# Segment
+labels = segment_traditional(data.data, 'region_growing', {
+    'seed_threshold': 0.5,
+    'growth_threshold': 0.1
+})
+```
+
+#### 🎮 Quick Demo
+```powershell
+.\venv\Scripts\python.exe quick_start.py
+```
+
+### 📚 Complete Documentation
+- **[HOW_TO_RUN.md](HOW_TO_RUN.md)** - All methods to run the program
+- **[SEGMENTATION_GUIDE.md](SEGMENTATION_GUIDE.md)** - Detailed method descriptions  
+- **[INSTALLATION.md](INSTALLATION.md)** - Full installation and usage guide
+
 ## Installation
 
 Install dependencies:

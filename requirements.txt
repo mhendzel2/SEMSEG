@@ -15,8 +15,8 @@ tensorflow>=2.8.0
 
 # Advanced Segmentation Dependencies (optional)
 PyMaxflow>=1.2.13  # For graph cuts segmentation
-nnunet  # For nnU-Net (requires separate installation)
+# nnunet  # For nnU-Net (requires separate installation and Python <3.12)
 
 # GUI Dependencies
 matplotlib>=3.5.0
-tkinter  # Usually included with Python
+# tkinter is included with Python standard library

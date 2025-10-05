@@ -217,7 +217,6 @@ class FIBSEMPipeline:
                 'duration': time.time() - start_time
             }
     
-feature/roi-loading
     def _segment_traditional(self, data: np.ndarray, method: str, params: Dict[str, Any]) -> np.ndarray:
         """Apply traditional segmentation method."""
         if method == 'watershed':
@@ -450,9 +449,6 @@ feature/roi-loading
         return final_labels
     
     def quantify_morphology(self, min_size: int = 10, **kwargs) -> Dict[str, Any]:
-=======
-    def quantify_morphology(self, **kwargs) -> Dict[str, Any]:
-main
         """
         Quantify morphological properties of segmented objects.
         

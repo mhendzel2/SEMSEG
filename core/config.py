@@ -61,37 +61,77 @@ class FIBSEMConfig:
                         'threshold_rel': 0.6,
                         'watershed_line': True
                     },
-                    'active_contour': {
-                        'alpha': 0.015,
-                        'beta': 10,
-                        'gamma': 0.001
+                    'thresholding': {
+                        'method': 'otsu',
+                        'block_size': None,
+                        'offset': 0
                     },
                     'morphology': {
                         'operation': 'opening',
                         'structuring_element': 'ball',
                         'radius': 3
                     },
-                    'thresholding': {
-                        'method': 'otsu',
-                        'block_size': None,
-                        'offset': 0
+                    'region_growing': {
+                        'seed_threshold': 0.5,
+                        'growth_threshold': 0.1,
+                        'connectivity': 1,
+                        'min_distance': 10
                     },
-                    'graph_cut': {
-                        'lambda_smooth': 1.0,
+                    'graph_cuts': {
+                        'lambda': 1.0,
+                        'sigma': 10.0
+                    },
+                    'active_contours': {
+                        'alpha': 0.015,
+                        'beta': 10,
+                        'gamma': 0.001,
+                        'iterations': 100
+                    },
+                    'slic': {
+                        'n_segments': 1000,
+                        'compactness': 10.0,
                         'sigma': 1.0
+                    },
+                    'felzenszwalb': {
+                        'scale': 100,
+                        'sigma': 0.5,
+                        'min_size': 50
+                    },
+                    'random_walker': {
+                        'beta': 130,
+                        'mode': 'cg_mg'
                     }
                 },
                 'deep_learning': {
-                    'multiresunet': {
-                        'patch_size': [64, 64, 64],
-                        'overlap': 0.25,
-                        'batch_size': 4
+                    'unet_2d': {
+                        'model_path': None,
+                        'input_size': [256, 256, 1],
+                        'num_classes': 2,
+                        'threshold': 0.5
                     },
-                    'wnet3d': {
+                    'unet_3d': {
+                        'model_path': None,
                         'patch_size': [64, 64, 64],
-                        'overlap': 0.25,
-                        'batch_size': 2,
-                        'ncut_weight': 1.0
+                        'num_classes': 2,
+                        'threshold': 0.5,
+                        'overlap': 0.25
+                    },
+                    'vnet': {
+                        'model_path': None,
+                        'patch_size': [64, 64, 64],
+                        'num_classes': 2,
+                        'threshold': 0.5
+                    },
+                    'attention_unet': {
+                        'model_path': None,
+                        'input_size': [256, 256, 1],
+                        'num_classes': 2,
+                        'threshold': 0.5
+                    },
+                    'nnunet': {
+                        'spacing': [1.0, 1.0, 1.0],
+                        'num_classes': 2,
+                        'threshold': 0.5
                     }
                 }
             },

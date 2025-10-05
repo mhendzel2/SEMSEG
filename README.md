@@ -8,11 +8,14 @@ A comprehensive software package for automated analysis of three-dimensional Foc
 
 ## Features
 
-- **Data Loading**: Support for multiple file formats (TIFF, HDF5, NumPy arrays)
-- **Preprocessing**: Noise reduction, contrast enhancement, and artifact removal  
-- **Segmentation**: Traditional methods (watershed, thresholding, morphology)
+- **Data Loading**: Support for multiple file formats (TIFF, HDF5, NumPy arrays, remote Zarr datasets)
+- **Preprocessing**: Advanced noise reduction, contrast enhancement, and FIB-SEM artifact removal  
+- **Segmentation**: Comprehensive suite of traditional and deep learning methods
+  - Traditional: watershed, region growing, graph cuts, active contours, SLIC, Felzenszwalb, random walker
+  - Deep Learning: 2D/3D U-Net, V-Net, Attention U-Net, nnU-Net-style adaptive segmentation
 - **Quantification**: Morphological analysis, particle analysis, and statistical measurements
 - **Configuration**: Flexible parameter management with hierarchical configuration files
+- **3D Support**: Full volumetric processing with memory-efficient sliding window approaches
 
 ## Command Line Usage
 
@@ -27,8 +30,36 @@ pipeline = FIBSEMPipeline(config=config, voxel_spacing=(10.0, 5.0, 5.0))
 
 # Load and process data
 result = pipeline.load_data('path/to/data.tif')
-seg_result = pipeline.segment_data(method='watershed')
+
+# Traditional segmentation
+seg_result = pipeline.segment_data(method='region_growing', method_type='traditional')
+
+# Deep learning segmentation  
+seg_result = pipeline.segment_data(method='unet_3d', method_type='deep_learning')
+
+# Quantification
 morph_result = pipeline.quantify_morphology()
+```
+
+## Segmentation Methods
+
+### Traditional Methods
+- **Watershed**: Separating touching objects
+- **Region Growing**: Homogeneous structure segmentation  
+- **Graph Cuts**: Binary segmentation with smooth boundaries
+- **Active Contours**: Smooth boundary detection
+- **SLIC**: Superpixel over-segmentation
+- **Felzenszwalb**: Hierarchical graph-based segmentation
+- **Random Walker**: Semi-supervised segmentation
+
+### Deep Learning Methods
+- **2D U-Net**: Slice-by-slice segmentation
+- **3D U-Net**: True volumetric segmentation
+- **V-Net**: Medical imaging optimized 3D network
+- **Attention U-Net**: Focus on relevant features
+- **nnU-Net Style**: Self-configuring adaptive segmentation
+
+See [SEGMENTATION_GUIDE.md](SEGMENTATION_GUIDE.md) for detailed usage instructions.
 ```
 
 ## Installation

@@ -8,3 +8,15 @@ Pillow>=9.0.0
 mclahe @ https://github.com/VincentStimper/mclahe/archive/numpy.zip
 zarr
 s3fs
+
+# Deep Learning Dependencies (optional)
+tensorflow>=2.8.0
+# tensorflow-gpu>=2.8.0  # Uncomment for GPU support
+
+# Advanced Segmentation Dependencies (optional)
+PyMaxflow>=1.2.13  # For graph cuts segmentation
+nnunet  # For nnU-Net (requires separate installation)
+
+# GUI Dependencies
+matplotlib>=3.5.0
+tkinter  # Usually included with Python

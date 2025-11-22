@@ -29,10 +29,16 @@ def start_viewer(bind_address: str = '0.0.0.0', port: int = 0):
     if not _HAS_NEUROGLANCER:
         raise RuntimeError("python-neuroglancer not installed. pip install neuroglancer")
     if _viewer is not None:
-        return _viewer, _viewer.state.url
-    neuroglancer.set_server_bind_address(bind_address, port=port)  # type: ignore[union-attr]
+        return _viewer, str(_viewer)
+    neuroglancer.set_server_bind_address(bind_address=bind_address, bind_port=port)  # type: ignore[union-attr]
     _viewer = neuroglancer.Viewer()  # type: ignore[union-attr]
-    return _viewer, _viewer.state.url
+    return _viewer, str(_viewer)
+
+
+def get_viewer_url(viewer=None) -> Optional[str]:
+    """Return the current viewer URL."""
+    v = viewer if viewer is not None else _viewer
+    return str(v) if v is not None else None
 
 
 def add_zarr_layer(viewer, name: str, zarr_path: str, voxel_size_nm=(8,8,8)):
@@ -58,7 +64,7 @@ def add_zarr_layer(viewer, name: str, zarr_path: str, voxel_size_nm=(8,8,8)):
     if arr.size > 512**3:
         raise RuntimeError("Array too large to embed directly; provide precomputed source instead.")
     with viewer.txn() as s:  # type: ignore
-    s.layers.append(name=name, layer=neuroglancer.LocalVolume(  # type: ignore[union-attr]
+        s.layers.append(name=name, layer=neuroglancer.LocalVolume(  # type: ignore[union-attr]
             data=arr,
             voxel_size=voxel_size_nm,
         ))

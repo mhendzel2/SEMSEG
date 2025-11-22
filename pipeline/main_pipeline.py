@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union, List, Tuple
 import logging
 
-from ..core.config import FIBSEMConfig
-from ..core.data_io import load_fibsem_data, FIBSEMData
-from ..core.preprocessing import preprocess_fibsem_data
-from ..core import segmentation
-from ..core import quantification
+from core.config import FIBSEMConfig
+from core.data_io import load_fibsem_data, FIBSEMData
+from core.preprocessing import preprocess_fibsem_data
+from core import segmentation
+from core import quantification
 
 logger = logging.getLogger(__name__)
 

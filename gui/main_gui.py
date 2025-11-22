@@ -14,6 +14,7 @@ import numpy as np
 import threading
 import os
 import sys
+import webbrowser
 from pathlib import Path
 
 # Add parent directory to path for imports
@@ -22,7 +23,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from core.config import FIBSEMConfig
 from core.data_io import load_fibsem_data, get_file_info, FIBSEMData, load_subvolume
 from pipeline.main_pipeline import FIBSEMPipeline
-
+import neuroglancer_integration
 
 class FIBSEMGUIApp:
     """Main GUI application for FIB-SEM analysis."""
@@ -105,6 +106,12 @@ class FIBSEMGUIApp:
         oo_id_entry = ttk.Entry(oo_frame, textvariable=self.oo_id_var)
         oo_id_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
         
+        # 3D Preview Frame
+        preview_frame = ttk.Frame(oo_section)
+        preview_frame.pack(fill=tk.X, pady=5)
+        ttk.Button(preview_frame, text="Launch 3D Preview", command=self.launch_preview).pack(side=tk.LEFT, padx=5)
+        ttk.Button(preview_frame, text="Get Selection from Preview", command=self.get_preview_selection).pack(side=tk.LEFT, padx=5)
+
         # File information section
         info_section = ttk.LabelFrame(data_frame, text="File Information", padding=10)
         info_section.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
@@ -482,6 +489,73 @@ class FIBSEMGUIApp:
         self.status_var.set("Ready")
         messagebox.showerror("Error", f"Failed to load data: {error_msg}")
 
+    def launch_preview(self):
+        """Launch Neuroglancer for the selected OpenOrganelle dataset."""
+        dataset_id = self.oo_id_var.get()
+        if not dataset_id:
+            messagebox.showerror("Error", "Please enter a Dataset ID.")
+            return
+
+        try:
+            source_url = f"zarr://s3://open-organelle/{dataset_id}/{dataset_id}.zarr"
+            viewer, url = neuroglancer_integration.start_viewer()
+
+            # Add the layer
+            try:
+                neuroglancer_integration.add_remote_layer(viewer, dataset_id, source_url)
+            except Exception as e:
+                messagebox.showwarning("Warning", f"Viewer started but failed to add layer: {e}")
+
+            # Open browser
+            if url:
+                webbrowser.open(url)
+                self.status_var.set(f"Preview launched at {url}")
+            else:
+                messagebox.showerror("Error", "Failed to get viewer URL.")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to launch preview: {str(e)}")
+
+    def get_preview_selection(self):
+        """Retrieve the bounding box selection from Neuroglancer."""
+        viewer, _ = neuroglancer_integration.start_viewer()
+        boxes = neuroglancer_integration.get_box_annotations(viewer)
+
+        if not boxes:
+            messagebox.showinfo("Info", "No selection found.\n\n"
+                                        "In Neuroglancer, please create a bounding box annotation:\n"
+                                        "1. Open the 'Annotations' tab (or press 'Ctrl+click' on the layer).\n"
+                                        "2. Select the 'Bounding Box' tool.\n"
+                                        "3. Draw a box around the region of interest.\n"
+                                        "4. Come back here and click 'Get Selection from Preview' again.")
+            return
+
+        # Use the last box
+        box = boxes[-1]
+        c1 = box['corner1']
+        c2 = box['corner2']
+
+        # Determine ranges
+        x_range = sorted((c1[0], c2[0]))
+        y_range = sorted((c1[1], c2[1]))
+        z_range = sorted((c1[2], c2[2]))
+
+        # Update ROI variables
+        self.roi_z_start_var.set(str(z_range[0]))
+        self.roi_z_end_var.set(str(z_range[1]))
+
+        self.roi_selection['x'] = [int(x_range[0]), int(x_range[1])]
+        self.roi_selection['y'] = [int(y_range[0]), int(y_range[1])]
+
+        self.roi_xy_var.set(f"X range: {self.roi_selection['x'][0]}-{self.roi_selection['x'][1]}, "
+                            f"Y range: {self.roi_selection['y'][0]}-{self.roi_selection['y'][1]}")
+
+        messagebox.showinfo("Selection Captured",
+                            f"Captured ROI:\n"
+                            f"X: {self.roi_selection['x']}\n"
+                            f"Y: {self.roi_selection['y']}\n"
+                            f"Z: {z_range}")
+
     def load_roi(self):
         """Load the selected high-resolution Region of Interest."""
         oo_id = self.oo_id_var.get()
@@ -537,7 +611,7 @@ class FIBSEMGUIApp:
         if method_type == "traditional":
             methods = ["watershed", "thresholding", "morphology", "active_contour"]
         else:
-            methods = ["multiresunet", "wnet3d"]
+            methods = ["multiresunet", "wnet3d", "sam3"]
         
         self.method_combo['values'] = methods
         if methods:
@@ -558,10 +632,30 @@ class FIBSEMGUIApp:
         if not method:
             return
         
+        # Special handling for SAM3 prompts
+        row = 0
+        if method == "sam3":
+            # Text prompt
+            label = ttk.Label(self.param_frame, text="Text Prompt:")
+            label.grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
+
+            var = tk.StringVar()
+            entry = ttk.Entry(self.param_frame, textvariable=var, width=30)
+            entry.grid(row=row, column=1, padx=5, pady=2)
+            self.param_widgets['text_prompt'] = var
+            row += 1
+
+            # Use ROI as box prompt
+            var_box = tk.BooleanVar(value=False)
+            check = ttk.Checkbutton(self.param_frame, text="Use ROI Selection as Box Prompt",
+                                  variable=var_box)
+            check.grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
+            self.param_widgets['use_roi_box'] = var_box
+            row += 1
+
         # Get default parameters from config
         params = self.config.get_segmentation_params(method, method_type)
         
-        row = 0
         for param_name, param_value in params.items():
             if isinstance(param_value, (int, float)):
                 # Numeric parameter
@@ -650,6 +744,14 @@ class FIBSEMGUIApp:
                 # Add initial contour to parameters if it exists
                 if method == 'active_contour' and self.initial_contour is not None:
                     seg_params['initial_contour'] = self.initial_contour
+
+                # Handle SAM3 ROI box prompt
+                if method == 'sam3' and seg_params.get('use_roi_box'):
+                    if 'x' in self.roi_selection and 'y' in self.roi_selection:
+                         # SAM3 typically expects [x1, y1, x2, y2]
+                         x1, x2 = self.roi_selection['x']
+                         y1, y2 = self.roi_selection['y']
+                         seg_params['box_prompt'] = [x1, y1, x2, y2]
 
                 # Run segmentation
                 result = self.pipeline.segment_data(method=method, method_type=method_type, **seg_params)

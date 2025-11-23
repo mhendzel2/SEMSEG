@@ -132,6 +132,13 @@ class FIBSEMConfig:
                         'spacing': [1.0, 1.0, 1.0],
                         'num_classes': 2,
                         'threshold': 0.5
+                    },
+                    'sam3': {
+                        'model_type': 'vit_h',
+                        'checkpoint_path': None,
+                        'text_prompt': '',
+                        'box_prompt': None,
+                        'point_prompt': None
                     }
                 }
             },

@@ -611,7 +611,7 @@ class FIBSEMGUIApp:
         if method_type == "traditional":
             methods = ["watershed", "thresholding", "morphology", "active_contour"]
         else:
-            methods = ["multiresunet", "wnet3d"]
+            methods = ["multiresunet", "wnet3d", "sam3"]
         
         self.method_combo['values'] = methods
         if methods:
@@ -632,10 +632,30 @@ class FIBSEMGUIApp:
         if not method:
             return
         
+        # Special handling for SAM3 prompts
+        row = 0
+        if method == "sam3":
+            # Text prompt
+            label = ttk.Label(self.param_frame, text="Text Prompt:")
+            label.grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
+
+            var = tk.StringVar()
+            entry = ttk.Entry(self.param_frame, textvariable=var, width=30)
+            entry.grid(row=row, column=1, padx=5, pady=2)
+            self.param_widgets['text_prompt'] = var
+            row += 1
+
+            # Use ROI as box prompt
+            var_box = tk.BooleanVar(value=False)
+            check = ttk.Checkbutton(self.param_frame, text="Use ROI Selection as Box Prompt",
+                                  variable=var_box)
+            check.grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
+            self.param_widgets['use_roi_box'] = var_box
+            row += 1
+
         # Get default parameters from config
         params = self.config.get_segmentation_params(method, method_type)
         
-        row = 0
         for param_name, param_value in params.items():
             if isinstance(param_value, (int, float)):
                 # Numeric parameter
@@ -724,6 +744,14 @@ class FIBSEMGUIApp:
                 # Add initial contour to parameters if it exists
                 if method == 'active_contour' and self.initial_contour is not None:
                     seg_params['initial_contour'] = self.initial_contour
+
+                # Handle SAM3 ROI box prompt
+                if method == 'sam3' and seg_params.get('use_roi_box'):
+                    if 'x' in self.roi_selection and 'y' in self.roi_selection:
+                         # SAM3 typically expects [x1, y1, x2, y2]
+                         x1, x2 = self.roi_selection['x']
+                         y1, y2 = self.roi_selection['y']
+                         seg_params['box_prompt'] = [x1, y1, x2, y2]
 
                 # Run segmentation
                 result = self.pipeline.segment_data(method=method, method_type=method_type, **seg_params)

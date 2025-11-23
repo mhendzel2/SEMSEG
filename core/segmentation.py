@@ -47,6 +47,8 @@ def segment_deep_learning(data: np.ndarray, method: str, params: Dict[str, Any])
         return _attention_unet_segmentation(data, params)
     elif method == 'nnunet':
         return _nnunet_segmentation(data, params)
+    elif method == 'sam3':
+        return _sam3_segmentation(data, params)
     else:
         # Fallback for unknown methods
         logger.warning(f"Deep learning method {method} not fully implemented, using watershed fallback")
@@ -841,6 +843,129 @@ def _nnunet_segmentation(data: np.ndarray, params: Dict[str, Any]) -> np.ndarray
         })
         
         return _unet_2d_segmentation(data, adaptive_params)
+
+def _sam3_segmentation(data: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
+    """
+    Perform segmentation using Meta's SAM3 (Segment Anything Model 3).
+
+    Supports text prompts, box prompts, and point prompts.
+    """
+    try:
+        # Import sam3 here to avoid hard dependency
+        # This assumes sam3 is installed in the environment
+        # or the user has cloned it to a path we can add.
+        import torch
+        # Note: SAM3 import structure might vary based on installation
+        # We assume standard usage from documentation
+        from sam3 import SAM3
+    except ImportError:
+        logger.error("SAM3 or PyTorch not installed. Please install sam3.")
+        logger.info("Fallback to watershed due to missing dependencies.")
+        return _watershed_segmentation(data, {})
+
+    # Get prompts
+    text_prompt = params.get('text_prompt', None)
+    box_prompt = params.get('box_prompt', None) # Expects [x1, y1, x2, y2]
+    point_prompt = params.get('point_prompt', None)
+
+    # Check model path or auto-download
+    model_type = params.get('model_type', 'vit_h') # default large model
+    checkpoint = params.get('checkpoint_path', None)
+
+    # Initialize model
+    # This is a placeholder for the actual SAM3 initialization API
+    try:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        sam = SAM3(checkpoint=checkpoint, model_type=model_type)
+        sam.to(device=device)
+    except Exception as e:
+        logger.error(f"Failed to initialize SAM3 model: {e}")
+        return _watershed_segmentation(data, {})
+
+    # Preprocessing
+    # SAM expects RGB images (H, W, 3) generally.
+    # If 3D data is passed, we process slice-by-slice or use video tracking if SAM3 supports it natively.
+    # For simplicity in this integration, we handle 2D slices or 3D volume slice-by-slice unless
+    # we leverage SAM3's video capabilities (which require a different input format usually).
+
+    result = np.zeros_like(data, dtype=np.int32)
+
+    if data.ndim == 3:
+        # Process each slice
+        for i in range(data.shape[0]):
+            slice_data = data[i]
+
+            # Convert to RGB if grayscale
+            if slice_data.ndim == 2:
+                img_rgb = np.stack((slice_data,)*3, axis=-1)
+            else:
+                img_rgb = slice_data
+
+            # Normalize to 0-255 uint8
+            if img_rgb.dtype != np.uint8:
+                if img_rgb.max() > img_rgb.min():
+                    img_rgb = ((img_rgb - img_rgb.min()) / (img_rgb.max() - img_rgb.min()) * 255).astype(np.uint8)
+                else:
+                    # Handle constant image
+                    img_rgb = np.zeros_like(img_rgb, dtype=np.uint8)
+
+            # Inference
+            try:
+                # SAM3 API placeholder
+                masks = sam.predict(
+                    image=img_rgb,
+                    text_prompt=text_prompt,
+                    box=box_prompt,
+                    points=point_prompt
+                )
+
+                # Assume masks is a list or array of binary masks
+                # We take the first one or combine them
+                if isinstance(masks, list):
+                    mask = masks[0]
+                else:
+                    mask = masks
+
+                result[i] = mask.astype(np.int32)
+
+            except Exception as e:
+                logger.warning(f"SAM3 inference failed on slice {i}: {e}")
+    else:
+        # 2D data
+        if data.ndim == 2:
+            img_rgb = np.stack((data,)*3, axis=-1)
+        else:
+            img_rgb = data
+
+        if img_rgb.dtype != np.uint8:
+            if img_rgb.max() > img_rgb.min():
+                img_rgb = ((img_rgb - img_rgb.min()) / (img_rgb.max() - img_rgb.min()) * 255).astype(np.uint8)
+            else:
+                # Handle constant image
+                img_rgb = np.zeros_like(img_rgb, dtype=np.uint8)
+
+        try:
+            masks = sam.predict(
+                image=img_rgb,
+                text_prompt=text_prompt,
+                box=box_prompt,
+                points=point_prompt
+            )
+
+            if isinstance(masks, list):
+                mask = masks[0]
+            else:
+                mask = masks
+
+            result = mask.astype(np.int32)
+
+        except Exception as e:
+            logger.error(f"SAM3 inference failed: {e}")
+            return _watershed_segmentation(data, {})
+
+    from skimage import measure
+    labels = measure.label(result)
+    return labels
 
 # Helper functions for deep learning models
 

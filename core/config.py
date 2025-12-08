@@ -7,11 +7,48 @@ analysis workflows through hierarchical configuration files.
 
 import os
 import json
+import re
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_config_path(user_path: str) -> str:
+    """
+    Sanitize a user-provided config file path to prevent path traversal attacks.
+    
+    Args:
+        user_path: User-provided path string
+        
+    Returns:
+        Sanitized path string (just the filename, no directory components)
+        
+    Raises:
+        ValueError: If path contains invalid characters or patterns
+    """
+    if not user_path:
+        return "fibsem_config.json"
+    
+    # Strip whitespace
+    user_path = user_path.strip()
+    
+    # Reject path traversal sequences
+    if ".." in user_path or "/" in user_path or "\\" in user_path:
+        raise ValueError("Path must be a simple filename without directory components")
+    
+    # Validate filename characters (alphanumeric, underscore, hyphen, period)
+    if not re.match(r'^[\w\-\.]+$', user_path):
+        raise ValueError("Filename contains invalid characters")
+    
+    # Restrict to allowed extensions
+    allowed_extensions = {'.json', '.yml', '.yaml'}
+    if not any(user_path.lower().endswith(ext) for ext in allowed_extensions):
+        raise ValueError(f"File must have one of these extensions: {allowed_extensions}")
+    
+    return user_path
+
 
 class FIBSEMConfig:
     """Configuration manager for FIB-SEM analysis parameters."""
@@ -441,28 +478,15 @@ class FIBSEMConfig:
         # Ask to save configuration
         response = input("Save configuration to file? (y/n): ").lower()
         if response == 'y':
-            config_path = input("Configuration file path (default: fibsem_config.json): ").strip()
-            if not config_path:
-                config_path = "fibsem_config.json"
-            
-            # Security: Basic input validation before passing to save_config
-            # Reject absolute paths and path traversal sequences
-            if ".." in config_path:
-                print("✗ Error: Path traversal sequences ('..') are not allowed")
-                return
-            if os.path.isabs(config_path):
-                print("✗ Error: Absolute paths are not allowed. Please use a relative path.")
-                return
-            
-            # Restrict to allowed extensions
-            allowed_extensions = {'.json', '.yml', '.yaml'}
-            if not any(config_path.lower().endswith(ext) for ext in allowed_extensions):
-                print(f"✗ Error: File must have one of these extensions: {allowed_extensions}")
-                return
+            user_input = input("Configuration file name (default: fibsem_config.json): ")
             
             try:
+                # Sanitize the user input to prevent path traversal
+                config_path = _sanitize_config_path(user_input)
                 self.save_config(config_path)
                 print(f"✓ Configuration saved to {config_path}")
+            except ValueError as e:
+                print(f"✗ Error: {e}")
             except Exception as e:
                 print(f"✗ Error saving configuration: {e}")
 

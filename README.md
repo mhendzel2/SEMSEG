@@ -9,13 +9,44 @@ A comprehensive software package for automated analysis of three-dimensional Foc
 ## Features
 
 - **Data Loading**: Support for multiple file formats (TIFF, HDF5, NumPy arrays, remote Zarr datasets)
-- **Preprocessing**: Advanced noise reduction, contrast enhancement, and FIB-SEM artifact removal  
-- **Segmentation**: Comprehensive suite of traditional and deep learning methods
-  - Traditional: watershed, region growing, graph cuts, active contours, SLIC, Felzenszwalb, random walker
-  - Deep Learning: 2D/3D U-Net, V-Net, Attention U-Net, nnU-Net-style adaptive segmentation
-- **Quantification**: Morphological analysis, particle analysis, and statistical measurements
+- **Preprocessing**: Advanced noise reduction, contrast enhancement, drift correction (phase-correlation), and FIB-SEM artifact removal  
+- **Segmentation**: Comprehensive suite of traditional and deep learning methods with unified `SegmentationResult` return type
+  - Traditional: watershed, thresholding, morphology, region growing, graph cuts, active contours, SLIC, Felzenszwalb, random walker
+  - Deep Learning: 2D/3D U-Net, V-Net, Attention U-Net, nnU-Net-style, SAM3
+- **Quantification**: Extended morphological analysis including volume, surface area, sphericity, elongation, topology analysis, distribution fitting
 - **Configuration**: Flexible parameter management with hierarchical configuration files
-- **3D Support**: Full volumetric processing with memory-efficient sliding window approaches
+- **3D Support**: True volumetric processing for watershed, region growing, and active contours (no more slice-by-slice)
+- **Confidence Maps**: All segmentation methods return confidence/probability maps alongside labels
+
+## New in Latest Version
+
+### True 3D Algorithms
+- **Watershed**: Uses 3D distance transform and `peak_local_max` on full volume
+- **Region Growing**: Vectorized implementation using morphological reconstruction
+- **Active Contours**: 3D Chan-Vese level set method
+
+### Expanded Quantification
+- Volume calculations in physical units
+- Surface area via marching cubes
+- Shape factors: sphericity, elongation, solidity, convexity
+- Intensity statistics with distribution fitting
+- Network/topology analysis with skeletonization
+
+### Improved Preprocessing
+- Phase-correlation drift correction with subpixel accuracy
+- Parameter validation with meaningful error messages
+
+### Dependency Checking
+```python
+from core import check_all_dependencies, print_dependency_status
+
+# Check what's available
+print_dependency_status()
+
+# Programmatic access
+status = check_all_dependencies()
+print(status['deep_learning'])  # {'tensorflow': True/False, 'torch': True/False}
+```
 
 ## Command Line Usage
 
@@ -107,11 +138,19 @@ from core.data_io import load_fibsem_data
 # Load your data
 data = load_fibsem_data('your_data.tif')
 
-# Segment
-labels = segment_traditional(data.data, 'region_growing', {
+# Segment with SegmentationResult (includes confidence map)
+result = segment_traditional(data.data, 'region_growing', {
     'seed_threshold': 0.5,
-    'growth_threshold': 0.1
+    'growth_threshold': 0.1,
+    'return_result': True  # Return SegmentationResult dataclass
 })
+
+labels = result.labels           # Segmentation labels
+confidence = result.confidence   # Confidence/probability map
+metadata = result.metadata       # Algorithm metadata
+
+# Or for backward compatibility (just labels)
+labels = segment_traditional(data.data, 'watershed', {'min_distance': 20})
 ```
 
 #### 🎮 Quick Demo

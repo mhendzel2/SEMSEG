@@ -183,25 +183,27 @@ class FIBSEMPipeline:
             
             duration = time.time() - start_time
             
-            # Store the full SegmentationResult object
+            # Store the full result object
             self.segmentation_result_full = segmentation_result
             
             # Extract labels for backward compatibility
             # SegmentationResult is a dataclass with .labels, .confidence, .metadata
-            if hasattr(segmentation_result, 'labels'):
+            # segment_traditional/segment_deep_learning can return either SegmentationResult or ndarray
+            from core.segmentation import SegmentationResult
+            if isinstance(segmentation_result, SegmentationResult):
                 labels = segmentation_result.labels
                 confidence = segmentation_result.confidence
                 metadata = segmentation_result.metadata
             else:
-                # Fallback for legacy array returns
-                labels = segmentation_result
+                # Legacy array return (when return_result=False, which is default)
+                labels = np.asarray(segmentation_result)
                 confidence = None
                 metadata = {}
             
             # Store labels for backward compatibility with downstream methods
             self.segmentation_result = labels
             
-            num_labels = len(np.unique(labels)) - 1  # Exclude background
+            num_labels = int(len(np.unique(labels)) - 1)  # Exclude background
             
             result = {
                 'success': True,

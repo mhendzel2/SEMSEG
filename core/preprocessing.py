@@ -3,15 +3,111 @@ Preprocessing module for FIB-SEM data.
 
 This module provides comprehensive preprocessing tools for removing common
 FIB-SEM artifacts and enhancing image quality for improved segmentation.
+
+Features:
+- Noise removal: Gaussian, bilateral, median, Wiener, non-local means
+- Contrast enhancement: CLAHE, histogram equalization, adaptive
+- Artifact correction: curtaining, charging, drift (with phase correlation)
+- Intensity normalization: min-max, z-score, percentile
+- Parameter validation with sensible defaults and ranges
 """
 
 import numpy as np
 from typing import Union, List, Tuple, Optional, Dict, Any
 import logging
+from dataclasses import dataclass
 from scipy import ndimage
 from skimage import filters, exposure, restoration, morphology
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Parameter Validation Classes
+# =============================================================================
+
+@dataclass
+class NoiseRemovalParams:
+    """Parameters for noise removal with validation."""
+    method: str = 'gaussian'
+    sigma: float = 1.0
+    sigma_color: float = 0.1  # For bilateral
+    sigma_spatial: float = 1.0  # For bilateral
+    size: int = 3  # For median
+    patch_size: int = 5  # For NL-means
+    patch_distance: int = 6  # For NL-means
+    h: Optional[float] = None  # For NL-means, auto if None
+    
+    VALID_METHODS = ['gaussian', 'bilateral', 'median', 'wiener', 'nl_means']
+    
+    def __post_init__(self):
+        if self.method not in self.VALID_METHODS:
+            raise ValueError(f"method must be one of {self.VALID_METHODS}, got {self.method}")
+        if self.sigma <= 0:
+            raise ValueError(f"sigma must be > 0, got {self.sigma}")
+        if self.sigma_color <= 0:
+            raise ValueError(f"sigma_color must be > 0, got {self.sigma_color}")
+        if self.size < 1 or self.size % 2 == 0:
+            raise ValueError(f"size must be odd positive integer, got {self.size}")
+        if self.patch_size < 1:
+            raise ValueError(f"patch_size must be >= 1, got {self.patch_size}")
+
+
+@dataclass
+class ContrastParams:
+    """Parameters for contrast enhancement with validation."""
+    method: str = 'clahe'
+    clip_limit: float = 2.0
+    kernel_size: Tuple[int, ...] = (8, 8, 8)
+    nbins: int = 256
+    
+    VALID_METHODS = ['clahe', 'histogram_eq', 'adaptive_eq', 'rescale']
+    
+    def __post_init__(self):
+        if self.method not in self.VALID_METHODS:
+            raise ValueError(f"method must be one of {self.VALID_METHODS}, got {self.method}")
+        if self.clip_limit <= 0:
+            raise ValueError(f"clip_limit must be > 0, got {self.clip_limit}")
+        if self.nbins < 2:
+            raise ValueError(f"nbins must be >= 2, got {self.nbins}")
+
+
+@dataclass
+class ArtifactParams:
+    """Parameters for artifact removal with validation."""
+    curtaining_enabled: bool = True
+    charging_enabled: bool = True
+    drift_enabled: bool = False
+    curtaining_sigma: float = 5.0
+    charging_threshold_factor: float = 2.0
+    drift_method: str = 'phase_correlation'
+    
+    VALID_DRIFT_METHODS = ['phase_correlation', 'cross_correlation']
+    
+    def __post_init__(self):
+        if self.curtaining_sigma <= 0:
+            raise ValueError(f"curtaining_sigma must be > 0, got {self.curtaining_sigma}")
+        if self.charging_threshold_factor <= 0:
+            raise ValueError(f"charging_threshold_factor must be > 0, got {self.charging_threshold_factor}")
+        if self.drift_method not in self.VALID_DRIFT_METHODS:
+            raise ValueError(f"drift_method must be one of {self.VALID_DRIFT_METHODS}")
+
+
+def validate_image(image: np.ndarray, name: str = "image") -> None:
+    """Validate input image array."""
+    if image is None:
+        raise ValueError(f"{name} cannot be None")
+    if not isinstance(image, np.ndarray):
+        raise ValueError(f"{name} must be numpy array, got {type(image)}")
+    if image.size == 0:
+        raise ValueError(f"{name} cannot be empty")
+    if image.ndim not in [2, 3]:
+        raise ValueError(f"{name} must be 2D or 3D, got {image.ndim}D")
+
+
+# =============================================================================
+# Noise Removal Functions
+# =============================================================================
 
 def remove_noise(image: np.ndarray, 
                  method: str = 'gaussian',
@@ -263,46 +359,134 @@ def _remove_charging(image: np.ndarray, **kwargs) -> np.ndarray:
             return image
 
 def _correct_drift(image: np.ndarray, **kwargs) -> np.ndarray:
-    """Correct drift artifacts in image stacks."""
+    """
+    Correct drift artifacts in image stacks using phase correlation.
+    
+    Uses robust phase correlation registration for accurate sub-pixel
+    drift estimation between consecutive slices.
+    """
     if image.ndim != 3:
         logger.warning("Drift correction requires 3D image stack")
         return image
     
-    # Simple drift correction using cross-correlation
-    reference_slice = image[image.shape[0] // 2]  # Use middle slice as reference
-    corrected = np.zeros_like(image)
-    corrected[image.shape[0] // 2] = reference_slice
+    method = kwargs.get('drift_method', 'phase_correlation')
+    max_shift = kwargs.get('max_shift', 50)  # Maximum allowed shift in pixels
+    reference_mode = kwargs.get('reference_mode', 'previous')  # 'previous' or 'middle'
     
-    for i in range(image.shape[0]):
-        if i == image.shape[0] // 2:
-            continue
-        
-        # Calculate cross-correlation with reference
-        correlation = ndimage.correlate(reference_slice.astype(np.float32),
-                                       image[i].astype(np.float32))
-        
-        # Find peak correlation (this is simplified - real implementation would be more robust)
-        peak_pos = np.unravel_index(np.argmax(correlation), correlation.shape)
-        
-        # Calculate shift (simplified)
-        shift_y = peak_pos[0] - reference_slice.shape[0] // 2
-        shift_x = peak_pos[1] - reference_slice.shape[1] // 2
-        
-        # Apply shift correction
-        if abs(shift_y) < 10 and abs(shift_x) < 10:  # Only apply small corrections
-            corrected[i] = ndimage.shift(image[i], [shift_y, shift_x], order=1)
-        else:
-            corrected[i] = image[i]  # Keep original if shift is too large
+    logger.info(f"Correcting drift using {method} method")
     
-    return corrected
+    corrected = np.zeros_like(image, dtype=np.float32)
+    shifts = []
+    
+    if reference_mode == 'middle':
+        # Use middle slice as global reference
+        ref_idx = image.shape[0] // 2
+        reference = image[ref_idx].astype(np.float32)
+        corrected[ref_idx] = reference
+        
+        # Forward pass (from middle to end)
+        cumulative_shift = np.array([0.0, 0.0])
+        for i in range(ref_idx + 1, image.shape[0]):
+            shift = _compute_shift(reference, image[i], method, max_shift)
+            cumulative_shift += shift
+            shifts.append(cumulative_shift.copy())
+            corrected[i] = _apply_shift(image[i], cumulative_shift)
+        
+        # Backward pass (from middle to start)
+        cumulative_shift = np.array([0.0, 0.0])
+        for i in range(ref_idx - 1, -1, -1):
+            shift = _compute_shift(reference, image[i], method, max_shift)
+            cumulative_shift += shift
+            shifts.insert(0, cumulative_shift.copy())
+            corrected[i] = _apply_shift(image[i], cumulative_shift)
+    
+    else:  # reference_mode == 'previous'
+        # Progressive registration to previous slice
+        corrected[0] = image[0].astype(np.float32)
+        cumulative_shift = np.array([0.0, 0.0])
+        
+        for i in range(1, image.shape[0]):
+            # Compute shift relative to previous (corrected) slice
+            shift = _compute_shift(corrected[i-1], image[i], method, max_shift)
+            cumulative_shift += shift
+            shifts.append(cumulative_shift.copy())
+            corrected[i] = _apply_shift(image[i], cumulative_shift)
+    
+    # Log shift statistics
+    if shifts:
+        shifts_arr = np.array(shifts)
+        logger.info(f"Drift correction: max shift = {np.max(np.abs(shifts_arr)):.2f} pixels")
+        logger.info(f"Drift correction: mean shift = {np.mean(np.abs(shifts_arr)):.2f} pixels")
+    
+    return corrected.astype(image.dtype)
+
+
+def _compute_shift(reference: np.ndarray, moving: np.ndarray, 
+                   method: str, max_shift: int) -> np.ndarray:
+    """Compute shift between two images using specified method."""
+    
+    if method == 'phase_correlation':
+        try:
+            from skimage.registration import phase_cross_correlation
+            
+            shift, error, diffphase = phase_cross_correlation(
+                reference.astype(np.float64),
+                moving.astype(np.float64),
+                upsample_factor=10  # Sub-pixel accuracy
+            )
+            
+            # Validate shift magnitude
+            if np.any(np.abs(shift) > max_shift):
+                logger.warning(f"Detected shift {shift} exceeds max_shift {max_shift}, clamping")
+                shift = np.clip(shift, -max_shift, max_shift)
+            
+            return np.array(shift)
+            
+        except ImportError:
+            logger.warning("phase_cross_correlation not available, using cross_correlation")
+            method = 'cross_correlation'
+    
+    if method == 'cross_correlation':
+        # Traditional cross-correlation
+        from scipy.signal import correlate2d
+        
+        # Normalize images
+        ref_norm = (reference - reference.mean()) / (reference.std() + 1e-8)
+        mov_norm = (moving - moving.mean()) / (moving.std() + 1e-8)
+        
+        # Compute cross-correlation
+        correlation = correlate2d(ref_norm, mov_norm, mode='same')
+        
+        # Find peak
+        peak = np.unravel_index(np.argmax(correlation), correlation.shape)
+        
+        # Convert to shift (relative to center)
+        center = np.array(correlation.shape) // 2
+        shift = np.array(peak) - center
+        
+        # Validate shift
+        if np.any(np.abs(shift) > max_shift):
+            shift = np.clip(shift, -max_shift, max_shift)
+        
+        return shift.astype(np.float64)
+    
+    return np.array([0.0, 0.0])
+
+
+def _apply_shift(image: np.ndarray, shift: np.ndarray) -> np.ndarray:
+    """Apply sub-pixel shift to image using interpolation."""
+    return ndimage.shift(image.astype(np.float32), shift, order=3, mode='constant', cval=0)
+
 
 def correct_drift(image: np.ndarray, **kwargs) -> np.ndarray:
     """
-    Correct drift in FIB-SEM image stacks.
+    Correct drift in FIB-SEM image stacks using phase correlation.
     
     Args:
         image: 3D image stack
-        **kwargs: Drift correction parameters
+        drift_method: 'phase_correlation' (default) or 'cross_correlation'
+        max_shift: Maximum allowed shift in pixels (default: 50)
+        reference_mode: 'previous' (sequential) or 'middle' (global reference)
         
     Returns:
         Drift-corrected image stack

@@ -233,8 +233,22 @@ class FIBSEMConfig:
         
         Args:
             config_path: Output path for configuration file
+            
+        Raises:
+            ValueError: If path contains path traversal sequences
         """
         config_path = Path(config_path)
+        
+        # Security: Validate path to prevent path traversal attacks
+        # Resolve the path and ensure it doesn't escape allowed directories
+        try:
+            resolved_path = config_path.resolve()
+            # Check for path traversal attempts (e.g., ".." sequences)
+            if ".." in str(config_path):
+                raise ValueError("Path traversal sequences ('..') are not allowed in config paths")
+        except (OSError, RuntimeError) as e:
+            raise ValueError(f"Invalid path: {e}")
+        
         config_path.parent.mkdir(parents=True, exist_ok=True)
         
         logger.info(f"Saving configuration to {config_path}")
@@ -427,9 +441,24 @@ class FIBSEMConfig:
         # Ask to save configuration
         response = input("Save configuration to file? (y/n): ").lower()
         if response == 'y':
-            config_path = input("Configuration file path (default: fibsem_config.json): ")
+            config_path = input("Configuration file path (default: fibsem_config.json): ").strip()
             if not config_path:
                 config_path = "fibsem_config.json"
+            
+            # Security: Basic input validation before passing to save_config
+            # Reject absolute paths and path traversal sequences
+            if ".." in config_path:
+                print("✗ Error: Path traversal sequences ('..') are not allowed")
+                return
+            if os.path.isabs(config_path):
+                print("✗ Error: Absolute paths are not allowed. Please use a relative path.")
+                return
+            
+            # Restrict to allowed extensions
+            allowed_extensions = {'.json', '.yml', '.yaml'}
+            if not any(config_path.lower().endswith(ext) for ext in allowed_extensions):
+                print(f"✗ Error: File must have one of these extensions: {allowed_extensions}")
+                return
             
             try:
                 self.save_config(config_path)

@@ -25,6 +25,70 @@ from core.data_io import load_fibsem_data, get_file_info, FIBSEMData, load_subvo
 from pipeline.main_pipeline import FIBSEMPipeline
 import neuroglancer_integration
 
+
+class ToolTip:
+    """
+    Simple tooltip helper class for tkinter widgets.
+    
+    Usage:
+        button = ttk.Button(root, text="Click me")
+        ToolTip(button, "This button does something useful")
+    """
+    
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip = None
+        self.widget.bind("<Enter>", self.show_tooltip)
+        self.widget.bind("<Leave>", self.hide_tooltip)
+    
+    def show_tooltip(self, event=None):
+        """Show the tooltip near the widget."""
+        if self.tooltip:
+            return
+        x, y, _, _ = self.widget.bbox("insert") if hasattr(self.widget, 'bbox') else (0, 0, 0, 0)
+        x += self.widget.winfo_rootx() + 25
+        y += self.widget.winfo_rooty() + 25
+        
+        self.tooltip = tk.Toplevel(self.widget)
+        self.tooltip.wm_overrideredirect(True)
+        self.tooltip.wm_geometry(f"+{x}+{y}")
+        
+        label = ttk.Label(self.tooltip, text=self.text, justify=tk.LEFT,
+                         background="#ffffe0", relief=tk.SOLID, borderwidth=1,
+                         wraplength=300, padding=(5, 2))
+        label.pack()
+    
+    def hide_tooltip(self, event=None):
+        """Hide the tooltip."""
+        if self.tooltip:
+            self.tooltip.destroy()
+            self.tooltip = None
+
+
+# Method descriptions for tooltips
+TRADITIONAL_METHOD_DESCRIPTIONS = {
+    "watershed": "Marker-based watershed segmentation using distance transforms. Good for separating touching objects.",
+    "thresholding": "Simple threshold-based segmentation using Otsu, Li, or Yen methods.",
+    "morphology": "Morphological operations (opening/closing) followed by connected component labeling.",
+    "region_growing": "Grows regions from seed points based on intensity similarity using morphological reconstruction.",
+    "graph_cuts": "Graph-based segmentation optimizing energy function. Good for binary segmentation with clear boundaries.",
+    "active_contours": "Level-set based Chan-Vese active contours. Works well without edge information.",
+    "slic": "Simple Linear Iterative Clustering for superpixel/supervoxel generation.",
+    "felzenszwalb": "Efficient graph-based segmentation for superpixel-like regions.",
+    "random_walker": "Probabilistic segmentation based on random walk from labeled seeds."
+}
+
+DEEP_LEARNING_METHOD_DESCRIPTIONS = {
+    "unet_2d": "2D U-Net encoder-decoder architecture, processes slices independently.",
+    "unet_3d": "3D U-Net for volumetric segmentation, captures 3D context.",
+    "vnet": "V-Net architecture designed for volumetric medical image segmentation.",
+    "attention_unet": "U-Net with attention gates for improved focus on relevant features.",
+    "nnunet": "Self-configuring U-Net framework that adapts to input data.",
+    "sam3": "Segment Anything Model adapted for 3D biomedical imaging."
+}
+
+
 class FIBSEMGUIApp:
     """Main GUI application for FIB-SEM analysis."""
     
@@ -196,6 +260,7 @@ class FIBSEMGUIApp:
         self.method_var = tk.StringVar(value="watershed")
         self.method_combo = ttk.Combobox(method_frame, textvariable=self.method_var, state="readonly")
         self.method_combo.pack(side=tk.LEFT, padx=(5, 0))
+        self.method_combo.bind("<<ComboboxSelected>>", lambda e: self.update_parameter_widgets())
         
         # Parameters section
         params_section = ttk.LabelFrame(seg_frame, text="Parameters", padding=10)
@@ -609,9 +674,28 @@ class FIBSEMGUIApp:
         method_type = self.method_type_var.get()
         
         if method_type == "traditional":
-            methods = ["watershed", "thresholding", "morphology", "active_contour"]
+            # Methods available in core.segmentation.segment_traditional
+            methods = [
+                "watershed",
+                "thresholding",
+                "morphology",
+                "region_growing",
+                "graph_cuts",
+                "active_contours",  # Note: 'active_contours' not 'active_contour'
+                "slic",
+                "felzenszwalb",
+                "random_walker"
+            ]
         else:
-            methods = ["multiresunet", "wnet3d", "sam3"]
+            # Methods available in core.segmentation.segment_deep_learning
+            methods = [
+                "unet_2d",
+                "unet_3d",
+                "vnet",
+                "attention_unet",
+                "nnunet",
+                "sam3"
+            ]
         
         self.method_combo['values'] = methods
         if methods:
@@ -623,8 +707,13 @@ class FIBSEMGUIApp:
         """Update parameter input widgets based on selected method."""
         # Clear existing parameter widgets
         for widget in self.param_widgets.values():
-            widget.destroy()
+            if isinstance(widget, (tk.Widget, ttk.Widget)):
+                widget.destroy()
         self.param_widgets.clear()
+        
+        # Clear the description label if it exists
+        if hasattr(self, 'method_description_label'):
+            self.method_description_label.destroy()
         
         method_type = self.method_type_var.get()
         method = self.method_var.get()
@@ -632,8 +721,20 @@ class FIBSEMGUIApp:
         if not method:
             return
         
-        # Special handling for SAM3 prompts
+        # Add method description at the top
         row = 0
+        descriptions = TRADITIONAL_METHOD_DESCRIPTIONS if method_type == "traditional" else DEEP_LEARNING_METHOD_DESCRIPTIONS
+        if method in descriptions:
+            self.method_description_label = ttk.Label(
+                self.param_frame, 
+                text=descriptions[method],
+                wraplength=400,
+                foreground="gray"
+            )
+            self.method_description_label.grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=5, pady=(2, 10))
+            row += 1
+        
+        # Special handling for SAM3 prompts
         if method == "sam3":
             # Text prompt
             label = ttk.Label(self.param_frame, text="Text Prompt:")

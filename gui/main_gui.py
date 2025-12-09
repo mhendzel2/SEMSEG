@@ -154,6 +154,10 @@ class FIBSEMGUIApp:
         # Browse button
         browse_button = ttk.Button(file_section, text="Browse...", command=self.browse_file)
         browse_button.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Load button
+        self.load_button = ttk.Button(file_section, text="Load File", command=self.load_data, state=tk.DISABLED)
+        self.load_button.pack(side=tk.LEFT, padx=5, pady=5)
 
         # Or label
         ttk.Label(file_section, text="OR").pack(side=tk.LEFT, padx=5)
@@ -454,6 +458,11 @@ class FIBSEMGUIApp:
             self.file_path_var.set(filename)
             self.oo_id_var.set("")  # Clear OpenOrganelle ID
             self.show_file_info(filename)
+            
+            # Enable load button and guide user
+            if hasattr(self, 'load_button'):
+                self.load_button.config(state=tk.NORMAL)
+            self.status_var.set("File selected. Click 'Load File' to load data.")
     
     def show_file_info(self, file_path):
         """Display information about the selected file."""

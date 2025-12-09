@@ -16,6 +16,11 @@ import os
 import sys
 import webbrowser
 from pathlib import Path
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
@@ -233,8 +238,8 @@ class FIBSEMGUIApp:
         # Load buttons
         load_buttons_frame = ttk.Frame(data_frame)
         load_buttons_frame.pack(pady=10)
-        ttk.Button(load_buttons_frame, text="Load Low-Res Preview", command=self.load_data).pack(side=tk.LEFT, padx=5)
-        ttk.Button(load_buttons_frame, text="Load High-Res ROI", command=self.load_roi).pack(side=tk.LEFT, padx=5)
+        ttk.Button(load_buttons_frame, text="Load Full Data", command=self.load_data).pack(side=tk.LEFT, padx=5)
+        ttk.Button(load_buttons_frame, text="Load ROI", command=self.load_roi).pack(side=tk.LEFT, padx=5)
     
     def setup_segmentation_tab(self):
         """Setup the segmentation tab."""
@@ -503,10 +508,15 @@ class FIBSEMGUIApp:
 
         try:
             # Get voxel size
-            voxel_z = float(self.voxel_z_var.get())
-            voxel_y = float(self.voxel_y_var.get())
-            voxel_x = float(self.voxel_x_var.get())
-            voxel_size = (voxel_z, voxel_y, voxel_x)
+            try:
+                voxel_z = float(self.voxel_z_var.get())
+                voxel_y = float(self.voxel_y_var.get())
+                voxel_x = float(self.voxel_x_var.get())
+                voxel_size = (voxel_z, voxel_y, voxel_x)
+            except ValueError:
+                # Default if parsing fails
+                voxel_size = (10.0, 5.0, 5.0)
+                logger.warning("Invalid voxel size, using default (10, 5, 5)")
             
             self.status_var.set("Loading data...")
             self.progress_bar.start()
@@ -514,26 +524,36 @@ class FIBSEMGUIApp:
             # Load data in a separate thread to avoid blocking GUI
             def load_thread():
                 try:
-                    self.pipeline = FIBSEMPipeline(config=self.config, voxel_spacing=voxel_size)
+                    # Initialize pipeline if needed
+                    if self.pipeline is None:
+                        self.pipeline = FIBSEMPipeline(config=self.config, voxel_spacing=voxel_size)
+                    else:
+                        self.pipeline.voxel_spacing = voxel_size
+                        
                     result = self.pipeline.load_data(load_path)
                     
                     if result['success']:
                         self.current_data = result['data']
                         self.root.after(0, self.on_data_loaded)
                     else:
-                        self.root.after(0, lambda: self.on_load_error(result['error']))
+                        self.root.after(0, lambda: self.on_load_error(result.get('error', 'Unknown error')))
                         
                 except Exception as e:
                     self.root.after(0, lambda: self.on_load_error(str(e)))
             
             threading.Thread(target=load_thread, daemon=True).start()
             
-        except ValueError:
-            messagebox.showerror("Error", "Invalid voxel size values. Please enter valid numbers.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to initiate loading: {str(e)}")
     
     def on_data_loaded(self):
         """Handle successful data loading."""
         self.progress_bar.stop()
+        
+        if self.current_data is None:
+            self.status_var.set("Error: Data loaded but is None")
+            return
+
         self.status_var.set(f"Data loaded: {self.current_data.shape}")
         
         # Update slice navigation
@@ -549,7 +569,11 @@ class FIBSEMGUIApp:
         
         # Update ROI selection widgets
         self.roi_z_start_var.set("0")
-        self.roi_z_end_var.set(str(max_slice))
+        if len(self.current_data.shape) == 3:
+            self.roi_z_end_var.set(str(self.current_data.shape[0] - 1))
+        else:
+            self.roi_z_end_var.set("0")
+            
         self.rect_selector.set_active(True)
 
         # Update visualization
@@ -633,8 +657,10 @@ class FIBSEMGUIApp:
     def load_roi(self):
         """Load the selected high-resolution Region of Interest."""
         oo_id = self.oo_id_var.get()
-        if not oo_id:
-            messagebox.showerror("Error", "ROI loading only works with OpenOrganelle datasets.")
+        file_path = self.file_path_var.get()
+        
+        if not oo_id and not file_path:
+            messagebox.showerror("Error", "Please select a data file or enter an OpenOrganelle dataset ID.")
             return
 
         if 'x' not in self.roi_selection or 'y' not in self.roi_selection:
@@ -657,15 +683,50 @@ class FIBSEMGUIApp:
 
             def load_roi_thread():
                 try:
-                    # Assume the preview is the lowest resolution (-1)
-                    subvolume = load_subvolume(
-                        dataset_path=f"oo:{oo_id}",
-                        roi_slices=roi_slices,
-                        preview_resolution_level=-1
-                    )
+                    # Determine source
+                    source = f"oo:{oo_id}" if oo_id else file_path
+                    
+                    # For local files, we might need to handle differently if load_subvolume doesn't support them directly
+                    # But assuming load_subvolume handles local files too (via slicing after load or memmap)
+                    
+                    # If it's a local file, we might want to use the pipeline's load_data with roi
+                    # But for now let's try to use load_subvolume if it supports it, or fallback
+                    
+                    if oo_id:
+                        subvolume = load_subvolume(
+                            dataset_path=source,
+                            roi_slices=roi_slices,
+                            preview_resolution_level=-1
+                        )
+                        self.current_data = subvolume
+                    else:
+                        # Local file ROI loading
+                        # If pipeline is initialized, use it
+                        if self.pipeline is None:
+                             # Get voxel size
+                            try:
+                                voxel_z = float(self.voxel_z_var.get())
+                                voxel_y = float(self.voxel_y_var.get())
+                                voxel_x = float(self.voxel_x_var.get())
+                                voxel_size = (voxel_z, voxel_y, voxel_x)
+                            except ValueError:
+                                voxel_size = (10.0, 5.0, 5.0)
+                            
+                            self.pipeline = FIBSEMPipeline(config=self.config, voxel_spacing=voxel_size)
+                        
+                        # Load full data then slice (not efficient for huge files but works for now)
+                        # Ideally pipeline.load_data should support ROI
+                        result = self.pipeline.load_data(source)
+                        if result['success']:
+                            full_data = result['data']
+                            # Apply ROI
+                            if isinstance(full_data, FIBSEMData):
+                                self.current_data = full_data.data[roi_slices]
+                            else:
+                                self.current_data = full_data[roi_slices]
+                        else:
+                            raise Exception(result.get('error', 'Unknown error'))
 
-                    # Replace current data with the new subvolume
-                    self.current_data = subvolume
                     self.root.after(0, self.on_data_loaded)
 
                 except Exception as e:
@@ -799,6 +860,28 @@ class FIBSEMGUIApp:
             messagebox.showwarning("Warning", "Processing already in progress.")
             return
         
+        # Ensure pipeline is initialized with current data
+        if self.pipeline is None:
+            try:
+                voxel_z = float(self.voxel_z_var.get())
+                voxel_y = float(self.voxel_y_var.get())
+                voxel_x = float(self.voxel_x_var.get())
+                voxel_size = (voxel_z, voxel_y, voxel_x)
+                self.pipeline = FIBSEMPipeline(config=self.config, voxel_spacing=voxel_size)
+            except ValueError:
+                self.pipeline = FIBSEMPipeline(config=self.config)
+        
+        # If pipeline data is not set or different from current_data, update it
+        # This handles cases where data was loaded via load_roi or other means bypassing pipeline.load_data
+        if self.pipeline.data is None or (hasattr(self.pipeline.data, 'data') and self.pipeline.data.data is not self.current_data):
+             # Create a temporary FIBSEMData object wrapper if needed or just set data directly if pipeline supports it
+             # The pipeline expects FIBSEMData object usually
+             if not isinstance(self.current_data, FIBSEMData):
+                 # Wrap raw numpy array
+                 self.pipeline.data = FIBSEMData(self.current_data, self.pipeline.voxel_spacing)
+             else:
+                 self.pipeline.data = self.current_data
+
         self.processing = True
         self.status_var.set("Running segmentation...")
         self.progress_bar.start()

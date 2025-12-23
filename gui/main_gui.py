@@ -141,6 +141,7 @@ class FIBSEMGUIApp:
     def setup_data_tab(self):
         """Setup the data loading tab."""
         data_frame = ttk.Frame(self.notebook)
+        self.data_frame = data_frame
         self.notebook.add(data_frame, text="Data Loading")
         
         # File selection section
@@ -244,6 +245,7 @@ class FIBSEMGUIApp:
     def setup_segmentation_tab(self):
         """Setup the segmentation tab."""
         seg_frame = ttk.Frame(self.notebook)
+        self.seg_frame = seg_frame
         self.notebook.add(seg_frame, text="Segmentation")
         
         # Method selection
@@ -326,6 +328,7 @@ class FIBSEMGUIApp:
     def setup_visualization_tab(self):
         """Setup the visualization tab."""
         viz_frame = ttk.Frame(self.notebook)
+        self.viz_frame = viz_frame
         self.notebook.add(viz_frame, text="Visualization")
         
         # Control panel
@@ -351,8 +354,21 @@ class FIBSEMGUIApp:
         self.slice_label.pack(side=tk.LEFT)
         
         # Matplotlib figure
-        self.viz_figure, self.viz_axes = plt.subplots(1, 2, figsize=(10, 5))
-        self.viz_figure.tight_layout()
+        # Note: unit tests mock matplotlib.pyplot with MagicMock, where subplots() may not
+        # return the usual (fig, axes) tuple. Handle both real and mocked environments.
+        subplots_result = plt.subplots(1, 2, figsize=(10, 5))
+        if isinstance(subplots_result, tuple) and len(subplots_result) == 2:
+            self.viz_figure, self.viz_axes = subplots_result
+        else:
+            self.viz_figure = plt.figure(figsize=(10, 5))
+            ax1 = self.viz_figure.add_subplot(1, 2, 1)
+            ax2 = self.viz_figure.add_subplot(1, 2, 2)
+            self.viz_axes = [ax1, ax2]
+
+        try:
+            self.viz_figure.tight_layout()
+        except Exception:
+            pass
         
         self.viz_canvas = FigureCanvasTkAgg(self.viz_figure, viz_frame)
         self.viz_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -385,9 +401,22 @@ class FIBSEMGUIApp:
             messagebox.showerror("Error", "Please load data first.")
             return
 
+        # Ensure the user can actually see the image they need to draw on
+        self._focus_visualization_tab()
+        self.update_visualization()
+
         self.status_var.set("Draw a polygon on the left image to initialize the contour. Press 'Enter' to confirm.")
         self.rect_selector.set_active(False) # Deactivate other selectors
         self.poly_selector.set_active(True)
+
+    def _focus_visualization_tab(self):
+        """Switch to the Visualization tab if available."""
+        try:
+            if hasattr(self, 'viz_frame'):
+                self.notebook.select(self.viz_frame)
+        except Exception:
+            # Best-effort only; visualization can still be updated.
+            pass
 
     def on_poly_select(self, vertices):
         """Callback for the PolygonSelector."""
@@ -577,6 +606,7 @@ class FIBSEMGUIApp:
         self.rect_selector.set_active(True)
 
         # Update visualization
+        self._focus_visualization_tab()
         self.update_visualization()
         
         messagebox.showinfo("Success", f"Data loaded successfully!\nShape: {self.current_data.shape}")
@@ -859,6 +889,16 @@ class FIBSEMGUIApp:
         if self.processing:
             messagebox.showwarning("Warning", "Processing already in progress.")
             return
+
+        # If the selected method requires an interactive prompt, guide the user first.
+        selected_method = self.method_var.get()
+        if selected_method == 'active_contours' and self.initial_contour is None:
+            messagebox.showinfo(
+                "Initial contour required",
+                "Active contours needs an initial polygon. The Visualization tab will open so you can draw it on the left image."
+            )
+            self.draw_initial_contour()
+            return
         
         # Ensure pipeline is initialized with current data
         if self.pipeline is None:
@@ -873,7 +913,13 @@ class FIBSEMGUIApp:
         
         # If pipeline data is not set or different from current_data, update it
         # This handles cases where data was loaded via load_roi or other means bypassing pipeline.load_data
-        if self.pipeline.data is None or (hasattr(self.pipeline.data, 'data') and self.pipeline.data.data is not self.current_data):
+        if self.pipeline.data is None or (
+            hasattr(self.pipeline.data, 'data')
+            and (
+                (isinstance(self.current_data, FIBSEMData) and self.pipeline.data.data is not self.current_data.data)
+                or (not isinstance(self.current_data, FIBSEMData) and self.pipeline.data.data is not self.current_data)
+            )
+        ):
              # Create a temporary FIBSEMData object wrapper if needed or just set data directly if pipeline supports it
              # The pipeline expects FIBSEMData object usually
              if not isinstance(self.current_data, FIBSEMData):
@@ -935,7 +981,7 @@ class FIBSEMGUIApp:
                         pass  # Skip invalid parameters
                 
                 # Add initial contour to parameters if it exists
-                if method == 'active_contour' and self.initial_contour is not None:
+                if method == 'active_contours' and self.initial_contour is not None:
                     seg_params['initial_contour'] = self.initial_contour
 
                 # Handle SAM3 ROI box prompt
@@ -993,6 +1039,12 @@ class FIBSEMGUIApp:
         """Update the visualization display."""
         if self.current_data is None:
             return
+
+        # Support both FIBSEMData and raw numpy arrays.
+        if isinstance(self.current_data, FIBSEMData):
+            data_arr = self.current_data.data
+        else:
+            data_arr = np.asarray(self.current_data)
         
         # Clear axes
         for ax in self.viz_axes:
@@ -1002,10 +1054,12 @@ class FIBSEMGUIApp:
         slice_idx = self.slice_var.get()
         
         # Get data slice
-        if len(self.current_data.shape) == 3:
-            original_slice = self.current_data.data[slice_idx]
+        if data_arr.ndim == 3:
+            slice_idx = int(slice_idx)
+            slice_idx = max(0, min(slice_idx, data_arr.shape[0] - 1))
+            original_slice = data_arr[slice_idx]
         else:
-            original_slice = self.current_data.data
+            original_slice = data_arr
         
         # Display original data
         self.viz_axes[0].imshow(original_slice, cmap='gray')
